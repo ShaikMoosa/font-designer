@@ -1,6 +1,6 @@
 // SVG Edit View: pan/zoom, pen + select + hand tools, nodes/handles,
 // metrics and guides. Font coords are Y-up; screen coords are Y-down.
-import { contourToPathD, glyphBounds } from "./model.ts";
+import { contourToPathD, glyphBounds, resolveGlyphContours } from "./model.ts";
 import type { Bounds, Contour, Font, FontNode, Glyph, GlyphLayer } from "./model.ts";
 
 const SVGNS = "http://www.w3.org/2000/svg";
@@ -43,6 +43,7 @@ export interface Editor {
   addContour: (contour: Contour) => void;
   nudgeSelected: (dx: number, dy: number) => void;
   getSelected: () => Selection | null;
+  setGhostD: (d: string | null) => void;
 }
 
 interface EditorState {
@@ -51,6 +52,7 @@ interface EditorState {
   showGuides: boolean; showNodes: boolean;
   selected: Selection | null; activePathIdx: number;
   pendingHandle: FontPoint | null; drag: Drag | null;
+  ghostD: string | null;
 }
 
 export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
@@ -62,6 +64,7 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     activePathIdx: -1,
     pendingHandle: null,
     drag: null,
+    ghostD: null,
   };
 
   function fontToScreen(x: number, y: number): FontPoint {
@@ -136,13 +139,22 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     }
     const lay = layer();
     if (!lay) return;
-    // Closed contours share one path with evenodd fill so counters punch out;
-    // open contours stay unfilled strokes.
+    if (state.ghostD) {
+      const ghost = el("path", { d: state.ghostD, fill: "none", stroke: "#6fca97", "stroke-dasharray": `${6 / state.scale} ${4 / state.scale}`, "stroke-width": 1.4 / state.scale, "vector-effect": "non-scaling-stroke" });
+      gWorld.appendChild(ghost);
+    }
+    // Closed contours (own + components, resolved) share one path with
+    // evenodd fill so counters punch out; own open contours stay strokes.
     const closedDs: string[] = [];
+    for (const contour of resolveGlyphContours(font, glyph, font.currentMasterId)) {
+      if (!contour.closed) continue;
+      const d = contourToPathD(contour);
+      if (d) closedDs.push(d);
+    }
     lay.paths.forEach((contour, pi) => {
+      if (contour.closed) return;
       const d = contourToPathD(contour);
       if (!d) return;
-      if (contour.closed) { closedDs.push(d); return; }
       const p = el("path", { d, class: "outline-path open-path", "stroke-width": 1.4 / state.scale, "vector-effect": "non-scaling-stroke" });
       p.dataset.pathIdx = String(pi);
       gWorld.appendChild(p);
@@ -418,5 +430,6 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     toggleNodes() { state.showNodes = !state.showNodes; render(); return state.showNodes; },
     deleteSelected, closeActivePath, convertSelected, addContour, nudgeSelected,
     getSelected: () => state.selected,
+    setGhostD(d: string | null) { state.ghostD = d; render(); },
   };
 }

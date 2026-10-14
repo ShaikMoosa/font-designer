@@ -2,7 +2,7 @@
 // master; unencoded glyphs are included as unmapped glyphs where possible.
 import opentype from "opentype.js";
 import type { Glyph as OtGlyph, Path as OtPath } from "opentype.js";
-import { contourToPathD } from "./model.ts";
+import { contourToPathD, resolveGlyphContours } from "./model.ts";
 import type { Contour, Font } from "./model.ts";
 
 function contourCommands(contour: Contour, path: OtPath): void {
@@ -27,8 +27,8 @@ export function fontToOtfArrayBuffer(font: Font): ArrayBuffer {
   glyphs.push(new opentype.Glyph({ name: ".notdef", unicode: 0, advanceWidth: 500, path: new opentype.Path() }));
   for (const g of font.glyphs) {
     const path = new opentype.Path();
-    const layer = g.layers[masterId];
-    if (layer) for (const c of layer.paths) contourCommands(c, path);
+    // Components decompose into the exported outlines.
+    for (const c of resolveGlyphContours(font, g, masterId)) contourCommands(c, path);
     glyphs.push(new opentype.Glyph({
       name: g.name,
       unicode: g.unicode != null ? g.unicode : undefined,

@@ -1,8 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createDefaultFont, contourToPathD, rectContour, glyphBounds } from "../src/model.ts";
-import { fontToGlyphsJson, glyphsJsonToFont } from "../src/glyphs-io.ts";
+import {
+  createDefaultFont, contourToPathD, rectContour, glyphBounds,
+  resolveGlyphContours, interpolateGlyphAt, resolveKern, findGlyph,
+} from "../src/model.ts";
+import { fontToGlyphsJson, glyphsJsonToFont, parseOpenStep } from "../src/glyphs-io.ts";
 import { fontToUfoZip, unzipToMap, glyphToGlif } from "../src/ufo.ts";
+import { parseFeatureCode, shapeText } from "../src/shaping.ts";
+import { flattenContour, unionContours, fixContourDirections } from "../src/pathsurgery.ts";
 
 test("default font has editable starter glyphs", () => {
   const font = createDefaultFont();
@@ -51,4 +56,114 @@ test("UFO zip contains GLIF, contents and kerning", async () => {
   assert.ok(aGlyph);
   const direct = glyphToGlif(aGlyph, "masterRegular");
   assert.match(direct, /<contour>/);
+  assert.ok(map.has("designspace.json"));
+  assert.ok(map.has("kerning-groups.plist"));
+});
+
+const OPENSTEP_FIXTURE = `{
+  familyName = FixtureSans;
+  unitsPerEm = 1000;
+  fontMaster = (
+    { id = "m-regular"; name = Regular; weightValue = 400; ascender = 800; descender = -200; capHeight = 700; xHeight = 500; },
+    { id = "m-bold"; name = Bold; weightValue = 700; ascender = 800; descender = -200; capHeight = 700; xHeight = 500; }
+  );
+  glyphs = (
+    {
+      glyphname = A; unicode = 0041;
+      layers = (
+        { layerId = "m-regular"; width = 600; paths = ( { closed = 1; nodes = ( "0 0 LINE", "300 700 LINE", "600 0 LINE" ); } ); anchors = ( { name = top; position = "{300, 700}"; } ); },
+        { layerId = "m-bold"; width = 640; paths = ( { closed = 1; nodes = ( "0 0 LINE", "320 700 LINE", "640 0 LINE" ); } ); }
+      );
+    },
+    {
+      glyphname = Aacute; unicode = 00C1;
+      layers = (
+        { layerId = "m-regular"; width = 600; components = ( { name = A; transform = "{1, 0, 0, 1, 10, 20}"; } ); }
+      );
+    }
+  );
+  kerning = { "@A" = { "@Aacute" = -30; }; };
+}`;
+
+test("OpenStep .glyphs imports masters, anchors, components, kerning", () => {
+  const parsed = parseOpenStep(OPENSTEP_FIXTURE) as { familyName?: string };
+  assert.equal(parsed.familyName, "FixtureSans");
+  const font = glyphsJsonToFont(OPENSTEP_FIXTURE, "Fixture.glyphs");
+  assert.equal(font.familyName, "FixtureSans");
+  assert.equal(font.masters.length, 2);
+  assert.equal(font.glyphs.length, 2);
+  const a = findGlyph(font, "A");
+  assert.ok(a);
+  assert.equal(a.anchors.length, 1);
+  assert.equal(a.anchors[0].x, 300);
+  const aacute = findGlyph(font, "Aacute");
+  assert.ok(aacute);
+  assert.equal(aacute.components.length, 1);
+  assert.equal(aacute.components[0].glyph, "A");
+  assert.equal(aacute.components[0].x, 10);
+  assert.equal(font.kerning["A|Aacute"], -30);
+  // Component resolution pulls the (translated) base contours in.
+  const resolved = resolveGlyphContours(font, aacute, "m-regular");
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0].nodes[0].x, 10);
+});
+
+test("interpolation morphs nodes and rejects single-master fonts", () => {
+  const font = glyphsJsonToFont(OPENSTEP_FIXTURE, "Fixture.glyphs");
+  const mid = interpolateGlyphAt(font, "A", 0.5);
+  assert.ok(mid);
+  const paths = mid.layers[font.currentMasterId].paths;
+  assert.equal(paths[0].nodes[1].x, 310);
+  const single = createDefaultFont();
+  assert.equal(interpolateGlyphAt(single, "A", 0.5), null);
+});
+
+test("kerning groups resolve only without an exact pair", () => {
+  const font = createDefaultFont();
+  const a = findGlyph(font, "A");
+  const v = findGlyph(font, "V");
+  assert.ok(a && v);
+  a.kerningGroupRight = "A";
+  v.kerningGroupLeft = "V";
+  font.kerningGroups["A|V"] = -45;
+  delete font.kerning["A|V"];
+  assert.equal(resolveKern(font, "A", "V"), -45);
+  font.kerning["A|V"] = -99;
+  assert.equal(resolveKern(font, "A", "V"), -99);
+});
+
+test("feature subset shapes ligatures and feature kerning", () => {
+  const font = createDefaultFont();
+  // Add f, i, fi glyphs so the ligature rule can fire.
+  for (const [name, uni] of [["f", 0x66], ["i", 0x69], ["fi", 0xFB01]] as Array<[string, number]>) {
+    font.glyphs.push({
+      name, unicode: uni, width: 300, lsb: 20, rsb: 20, category: "Letter",
+      kerningGroupLeft: "", kerningGroupRight: "", anchors: [], components: [],
+      metricsKeyLeft: "", metricsKeyRight: "", layers: { masterRegular: { paths: [] } },
+    });
+  }
+  font.featureCode = "@Upper = [A V];\nsub f i by fi;\npos @Upper V -111;\n";
+  const parsed = parseFeatureCode(font.featureCode);
+  assert.equal(parsed.subs.length, 1);
+  assert.equal(parsed.poss.get("A|V"), -111);
+  const shaped = shapeText(font, "fi AV", parsed);
+  assert.equal(shaped[0].name, "fi");
+  assert.equal(shaped[0].advance, 300);
+  const av = shapeText(font, "AV", parsed);
+  assert.equal(av[0].advance, 680 - 111);
+});
+
+test("path surgery flattens, unions overlaps, fixes direction", () => {
+  const ring = flattenContour(rectContour(0, 0, 100, 100));
+  assert.ok(ring.length >= 4);
+  const merged = unionContours([rectContour(0, 0, 100, 100), rectContour(50, 50, 100, 100)]);
+  assert.equal(merged.length, 1);
+  const b = glyphBounds({ layers: { m: { paths: merged } } } as never, "m");
+  assert.ok(b);
+  assert.equal(b.maxX, 150);
+  const cw = rectContour(0, 0, 100, 100);
+  cw.nodes.reverse();
+  const contours = [cw];
+  assert.equal(fixContourDirections(contours), 1);
+  assert.equal(fixContourDirections(contours), 0);
 });

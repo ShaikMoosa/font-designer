@@ -1,6 +1,7 @@
 // UFO 3 export/import as a .zip (stored entries) so Windows users get a
 // real interchange file without a native packager. GLIF points map:
 // line/curve/smooth keep their type; offcurve points omit `type`.
+import { DEFAULT_FEATURE_CODE, resolveGlyphContours } from "./model.ts";
 import type { Anchor, Contour, Font, FontNode, Glyph } from "./model.ts";
 
 export interface ZipFile { name: string; data: string | Uint8Array }
@@ -112,15 +113,16 @@ export function glyphNameToFile(name: string): string {
   return `${safe}.glif`;
 }
 
-export function glyphToGlif(glyph: Glyph, masterId: string): string {
+export function glyphToGlif(glyph: Glyph, masterId: string, contoursOverride?: Contour[]): string {
   const layer = glyph.layers[masterId] || { paths: [] };
+  const contours = contoursOverride ?? layer.paths;
   const lines: string[] = [];
   lines.push('<?xml version="1.0" encoding="UTF-8"?>');
   lines.push(`<glyph name="${esc(glyph.name)}" format="2">`);
   lines.push(`  <advance width="${glyph.width}"/>`);
   if (glyph.unicode != null) lines.push(`  <unicode hex="${glyph.unicode.toString(16).toUpperCase().padStart(4, "0")}"/>`);
   lines.push("  <outline>");
-  for (const c of layer.paths) {
+  for (const c of contours) {
     lines.push("    <contour>");
     c.nodes.forEach((nd, idx) => {
       const typeAttr = nd.type === "offcurve" ? "" : ` type="${nd.type === "curve" || nd.type === "smooth" ? nd.type : "line"}"`;
@@ -190,7 +192,8 @@ export function fontToUfoZip(font: Font): Uint8Array<ArrayBuffer> {
     name: "glyphs/contents.plist",
     data: `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n  <dict>\n${contents}\n  </dict>\n</plist>\n`,
   });
-  for (const g of font.glyphs) files.push({ name: `glyphs/${glyphNameToFile(g.name)}`, data: glyphToGlif(g, masterId) });
+  // Components are decomposed to plain contours on UFO export.
+  for (const g of font.glyphs) files.push({ name: `glyphs/${glyphNameToFile(g.name)}`, data: glyphToGlif(g, masterId, resolveGlyphContours(font, g, masterId)) });
   const kernLines = Object.entries(font.kerning).map(([k, v]) => {
     const [l, r] = k.split("|");
     return `    <key>${esc(l)}</key>\n    <dict><key>${esc(r)}</key><integer>${v}</integer></dict>`;
@@ -198,6 +201,19 @@ export function fontToUfoZip(font: Font): Uint8Array<ArrayBuffer> {
   files.push({
     name: "kerning.plist",
     data: `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n  <dict>\n${kernLines}\n  </dict>\n</plist>\n`,
+  });
+  const groupLines = Object.entries(font.kerningGroups || {}).map(([k, v]) => `    <key>${esc(k)}</key>\n    <integer>${v}</integer>`).join("\n");
+  files.push({
+    name: "kerning-groups.plist",
+    data: `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n  <dict>\n${groupLines}\n  </dict>\n</plist>\n`,
+  });
+  files.push({
+    name: "designspace.json",
+    data: JSON.stringify({
+      format: "glyphs-windows-designspace-manifest",
+      axes: font.axes, masters: font.masters, instances: font.instances,
+      note: "Manifest for masters/axes/instances; outlines in this UFO are the active (or instance) master, decomposed.",
+    }, null, 2),
   });
   return zipStore(files);
 }
@@ -226,6 +242,7 @@ export function ufoMapToFont(map: Map<string, Uint8Array>, fileName?: string): F
       glyphs.push({
         name: parsed.name, unicode: parsed.unicode, width: parsed.width, lsb: 40, rsb: 40,
         category: "Letter", kerningGroupLeft: "", kerningGroupRight: "",
+        metricsKeyLeft: "", metricsKeyRight: "", components: [],
         anchors: parsed.anchors, layers: { masterRegular: { paths: parsed.paths } },
       });
     } catch { /* skip unreadable glyph, keep importing the rest */ }
@@ -239,10 +256,36 @@ export function ufoMapToFont(map: Map<string, Uint8Array>, fileName?: string): F
     let m;
     while ((m = pairRe.exec(txt))) kerning[`${m[1]}|${m[2]}`] = +m[3];
   }
+  const kerningGroups: Record<string, number> = {};
+  const groupBytes = map.get("kerning-groups.plist");
+  if (groupBytes) {
+    const txt = dec.decode(groupBytes);
+    const groupRe = /<key>([^<]+)<\/key>\s*<integer>(-?\d+)<\/integer>/g;
+    let gm: RegExpExecArray | null;
+    while ((gm = groupRe.exec(txt))) kerningGroups[gm[1]] = +gm[2];
+  }
+  let axes: Font["axes"] = [{ tag: "wght", name: "Weight", min: 400, defaultValue: 400, max: 700 }];
+  let masters: Font["masters"] = [{ id: "masterRegular", name: "Regular", weightValue: 400 }];
+  let instances: Font["instances"] = [{ name: "Regular", masterId: "masterRegular", active: true }];
+  const dsBytes = map.get("designspace.json");
+  if (dsBytes) {
+    try {
+      const ds = JSON.parse(dec.decode(dsBytes)) as { axes?: Font["axes"]; masters?: Font["masters"]; instances?: Font["instances"] };
+      if (ds.axes?.length) axes = ds.axes;
+      if (ds.masters?.length) masters = ds.masters;
+      if (ds.instances?.length) instances = ds.instances;
+    } catch { /* manifest is best-effort; outlines already imported */ }
+  }
+  // Imported layers live under masterRegular; remap to the first manifest master.
+  if (masters[0].id !== "masterRegular") {
+    for (const g of glyphs) {
+      if (g.layers.masterRegular) { g.layers[masters[0].id] = g.layers.masterRegular; delete g.layers.masterRegular; }
+    }
+  }
   return {
     familyName, version: "1.000", unitsPerEm, ascender, descender, capHeight, xHeight,
-    masters: [{ id: "masterRegular", name: "Regular", weightValue: 400 }],
-    instances: [{ name: "Regular", masterId: "masterRegular", active: true }],
-    glyphs, kerning, currentMasterId: "masterRegular", fileName: fileName || "Imported.ufo",
+    masters, instances, glyphs, kerning, kerningGroups, axes,
+    featureCode: DEFAULT_FEATURE_CODE,
+    currentMasterId: masters[0].id, fileName: fileName || "Imported.ufo",
   };
 }

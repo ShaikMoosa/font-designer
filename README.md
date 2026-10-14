@@ -28,13 +28,20 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   multi-master layer copy, pair kerning with live preview, family/metrics.
 - **Preview:** type a string below the editor; kerning applies; missing
   glyphs show as red boxes.
-- **Files:** Open/Save `.glyphs` (JSON subset — OpenStep-plist `.glyphs`
-  files get a clear error, not silent corruption), Export UFO as
-  `.ufo.zip` (unzip for the `.ufo` folder), Export OTF (beta, active
+- **Files:** Open/Save `.glyphs` (save is a JSON subset; real Mac
+  OpenStep-plist `.glyphs` files open with masters, anchors, components
+  and kerning), Export UFO as `.ufo.zip` (components decomposed, with
+  `designspace.json` + `kerning-groups.plist`), Export OTF (beta, active
   master, via opentype.js).
+- **Phase 2:** Components with live base-glyph updates and recipe
+  auto-composites, multi-master interpolation ghost + instance UFO
+  export, feature-code subset (classes / ligatures / `pos`) driving the
+  shaping preview, kerning groups + metrics keys, path-direction fix
+  and boolean remove-overlaps (flattens curves).
 
 ## Deferred (per Handbook)
 
-Interpolation/variable fonts, smart/corner/brush components, filters,
-extended feature code, manual PS/TT hinting, color fonts, plug-ins.
+Variable-font binaries, smart/corner/brush components, filters beyond
+union, full OpenType shaping (marks, complex scripts), manual PS/TT
+hinting, color fonts, plug-ins.
 Icons and starter outlines are original to this MVP.

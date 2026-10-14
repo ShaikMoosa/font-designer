@@ -7,18 +7,23 @@ export interface FontNode { x: number; y: number; type: NodeType }
 export interface Contour { closed: boolean; nodes: FontNode[] }
 export interface GlyphLayer { paths: Contour[] }
 export interface Anchor { name: string; x: number; y: number }
+export interface ComponentRef { glyph: string; x: number; y: number; scaleX: number; scaleY: number }
 export interface Glyph {
   name: string; unicode: number | null; width: number; lsb: number; rsb: number;
   category: string; kerningGroupLeft: string; kerningGroupRight: string;
   anchors: Anchor[]; layers: Record<string, GlyphLayer>;
+  components: ComponentRef[]; metricsKeyLeft: string; metricsKeyRight: string;
 }
-export interface FontMaster { id: string; name: string; weightValue: number }
-export interface FontInstance { name: string; masterId: string; active: boolean }
+export interface FontMaster { id: string; name: string; weightValue: number; axisValues?: Record<string, number> }
+export interface FontInstance { name: string; masterId: string; active: boolean; axisValues?: Record<string, number> }
+export interface FontAxis { tag: string; name: string; min: number; defaultValue: number; max: number }
 export interface Font {
   familyName: string; version: string; unitsPerEm: number;
   ascender: number; descender: number; capHeight: number; xHeight: number;
   masters: FontMaster[]; instances: FontInstance[]; glyphs: Glyph[];
-  kerning: Record<string, number>; currentMasterId: string; fileName: string;
+  kerning: Record<string, number>; kerningGroups: Record<string, number>;
+  axes: FontAxis[]; featureCode: string;
+  currentMasterId: string; fileName: string;
 }
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
 
@@ -123,6 +128,7 @@ export function getKern(font: Font, left: string, right: string): number {
 interface GlyphExtra {
   lsb?: number; rsb?: number; category?: string;
   kerningGroupLeft?: string; kerningGroupRight?: string; anchors?: Anchor[];
+  components?: ComponentRef[];
 }
 
 function makeGlyph(name: string, unicode: number | null, width: number, contours: Contour[], extra: GlyphExtra = {}): Glyph {
@@ -133,9 +139,20 @@ function makeGlyph(name: string, unicode: number | null, width: number, contours
     kerningGroupLeft: extra.kerningGroupLeft || "",
     kerningGroupRight: extra.kerningGroupRight || "",
     anchors: extra.anchors || [],
+    components: extra.components || [],
+    metricsKeyLeft: "", metricsKeyRight: "",
     layers: { masterRegular: { paths: contours } },
   };
 }
+
+export const DEFAULT_FEATURE_CODE = [
+  "# Feature code subset: classes, sub (ligatures), pos (kerning).",
+  "# Lines starting with # are comments. Example:",
+  "# @Upper = [A V H O];",
+  "# sub f i by fi;",
+  "# pos A V -70;",
+  "",
+].join("\n");
 
 // Original geometric starter glyphs (drawn for this MVP, not copied outlines).
 export function createDefaultFont(): Font {
@@ -173,6 +190,9 @@ export function createDefaultFont(): Font {
     instances: [{ name: "Regular", masterId: "masterRegular", active: true }],
     glyphs,
     kerning: { "A|V": -70, "V|A": -70, "T|o": -40, "A|period": -20 },
+    kerningGroups: {},
+    axes: [{ tag: "wght", name: "Weight", min: 400, defaultValue: 400, max: 700 }],
+    featureCode: DEFAULT_FEATURE_CODE,
     currentMasterId: "masterRegular",
     fileName: "Untitled.glyphs",
   };
@@ -188,3 +208,101 @@ export function syncBearings(font: Font, glyph: Glyph): void {
 }
 
 export function cloneFont(font: Font): Font { return JSON.parse(JSON.stringify(font)) as Font; }
+
+export function transformContour(c: Contour, dx: number, dy: number, sx = 1, sy = 1): Contour {
+  return {
+    closed: c.closed,
+    nodes: c.nodes.map((n) => ({ x: Math.round(n.x * sx + dx), y: Math.round(n.y * sy + dy), type: n.type })),
+  };
+}
+
+// Own contours plus component contours (transformed, recursive, cycle-safe).
+export function resolveGlyphContours(font: Font, glyph: Glyph, masterId: string, seen: Set<string> = new Set()): Contour[] {
+  const own = glyph.layers[masterId]?.paths ?? [];
+  const out: Contour[] = own.map((c) => ({ closed: c.closed, nodes: c.nodes.map((n) => ({ ...n })) }));
+  if (seen.has(glyph.name)) return out;
+  seen.add(glyph.name);
+  for (const comp of glyph.components || []) {
+    const base = findGlyph(font, comp.glyph);
+    if (!base) continue;
+    for (const c of resolveGlyphContours(font, base, masterId, seen)) {
+      out.push(transformContour(c, comp.x || 0, comp.y || 0, comp.scaleX || 1, comp.scaleY || 1));
+    }
+  }
+  return out;
+}
+
+export function contoursToPathD(contours: Contour[]): string {
+  return contours.map(contourToPathD).filter(Boolean).join(" ");
+}
+
+export function glyphToPathDResolved(font: Font, glyph: Glyph, masterId: string): string {
+  return contoursToPathD(resolveGlyphContours(font, glyph, masterId));
+}
+
+const RECIPES: Record<string, string[]> = {
+  eacute: ["e", "acutecomb"], Eacute: ["E", "acutecomb"],
+  aacute: ["a", "acutecomb"], Aacute: ["A", "acutecomb"],
+  agrave: ["a", "gravecomb"], egrave: ["e", "gravecomb"],
+  adieresis: ["a", "dieresiscomb"], odieresis: ["o", "dieresiscomb"],
+  atilde: ["a", "tildecomb"], ntilde: ["n", "tildecomb"],
+  ccedilla: ["c", "cedillacomb"],
+};
+
+export function compositeRecipe(name: string): string[] | null {
+  return RECIPES[name] ?? null;
+}
+
+// Exact pair wins, then kerning-group pair (right group of left glyph +
+// left group of right glyph), else 0.
+export function resolveKern(font: Font, left: string, right: string): number {
+  const exact = font.kerning[kernKey(left, right)];
+  if (exact) return exact;
+  const lg = findGlyph(font, left);
+  const rg = findGlyph(font, right);
+  if (lg?.kerningGroupRight && rg?.kerningGroupLeft) {
+    return font.kerningGroups[`${lg.kerningGroupRight}|${rg.kerningGroupLeft}`] || 0;
+  }
+  return 0;
+}
+
+export function contourArea(c: Contour): number {
+  let a = 0;
+  const pts = c.nodes.filter((n) => n.type !== "offcurve");
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], q = pts[(i + 1) % pts.length];
+    a += p.x * q.y - q.x * p.y;
+  }
+  return a / 2;
+}
+
+function lerp(a: number, b: number, t: number): number { return Math.round(a + (b - a) * t); }
+
+// Interpolate between the first and last master (by weightValue). Requires
+// compatible outlines; returns null when contours/nodes do not line up.
+export function interpolateGlyphAt(font: Font, glyphName: string, t: number): Glyph | null {
+  const glyph = findGlyph(font, glyphName);
+  if (!glyph || font.masters.length < 2) return null;
+  const sorted = [...font.masters].sort((a, b) => (a.weightValue || 0) - (b.weightValue || 0));
+  const ma = sorted[0], mb = sorted[sorted.length - 1];
+  const la = glyph.layers[ma.id], lb = glyph.layers[mb.id];
+  if (!la || !lb || la.paths.length !== lb.paths.length) return null;
+  const paths: Contour[] = [];
+  for (let i = 0; i < la.paths.length; i++) {
+    const ca = la.paths[i], cb = lb.paths[i];
+    if (ca.closed !== cb.closed || ca.nodes.length !== cb.nodes.length) return null;
+    paths.push({
+      closed: ca.closed,
+      nodes: ca.nodes.map((n, j) => ({ x: lerp(n.x, cb.nodes[j].x, t), y: lerp(n.y, cb.nodes[j].y, t), type: n.type })),
+    });
+  }
+  return {
+    ...glyph,
+    width: lerp(glyph.width, glyph.width, t),
+    layers: { ...glyph.layers, [font.currentMasterId]: { paths } },
+  };
+}
+
+export function mastersCompatible(font: Font, glyphName: string): boolean {
+  return interpolateGlyphAt(font, glyphName, 0.5) !== null;
+}

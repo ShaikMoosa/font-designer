@@ -1,13 +1,16 @@
 // App wiring: Font View, Edit View tabs, Inspector/Palette/Kerning/Font Info,
 // text preview, file commands, undo/redo, and Windows keyboard shortcuts.
 import {
-  createDefaultFont, findGlyph, glyphToPathD, glyphBounds, syncBearings,
-  cloneFont, getKern, kernKey, rectContour, ellipseContour,
+  createDefaultFont, findGlyph, glyphToPathD, glyphToPathDResolved, glyphBounds, syncBearings,
+  cloneFont, kernKey, rectContour, ellipseContour,
+  compositeRecipe, interpolateGlyphAt, mastersCompatible, contoursToPathD,
 } from "./model.ts";
 import type { Font, Glyph, GlyphLayer } from "./model.ts";
 import { fontToGlyphsJson, glyphsJsonToFont, downloadText, downloadBytes } from "./glyphs-io.ts";
 import { fontToUfoZip, unzipToMap, ufoMapToFont } from "./ufo.ts";
 import { fontToOtfArrayBuffer } from "./otf.ts";
+import { parseFeatureCode, shapeText } from "./shaping.ts";
+import { fixContourDirections, unionContours } from "./pathsurgery.ts";
 import { createEditor } from "./editor.ts";
 import type { Tool } from "./editor.ts";
 
@@ -98,7 +101,7 @@ function drawThumb(canvas: HTMLCanvasElement, glyph: Glyph): void {
   const w = canvas.width = 104, h = canvas.height = 88;
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#e8ecf1";
-  const d = glyphToPathD(glyph, state.font.currentMasterId);
+  const d = glyphToPathDResolved(state.font, glyph, state.font.currentMasterId);
   if (!d) {
     ctx.font = "11px Segoe UI"; ctx.fillStyle = "#9aa6b3";
     ctx.fillText(glyph.name === "space" ? "space" : "empty", 8, h / 2);
@@ -202,41 +205,36 @@ function renderPreview() {
   const size = +$<HTMLInputElement>("#previewSize").value || 72;
   const upm = state.font.unitsPerEm || 1000;
   const s = size / upm;
-  const byChar = new Map<string, Glyph>();
-  for (const g of state.font.glyphs) {
-    if (g.unicode != null) byChar.set(String.fromCodePoint(g.unicode), g);
-  }
-  const names = [...text].map((ch) => byChar.get(ch)?.name || null);
+  // Shaping subset: ligatures, feature pos, pair + group kerning (Features tab).
+  const shaped = shapeText(state.font, text);
   let cursor = 12;
   // Height grows with the proof size so caps/descenders are never clipped.
   const proofH = Math.round(size * 1.35) + 24;
   const baseline = proofH - 20;
   svg.style.height = `${proofH}px`;
-  const glyphEls: SVGPathElement[] = [];
-  [...text].forEach((ch, idx) => {
-    const g = byChar.get(ch);
-    const nextName = names[idx + 1];
-    if (!g) {
+  for (const item of shaped) {
+    if (!item.name) {
       const r = document.createElementNS(SVGNS, "rect");
       r.setAttribute("x", String(cursor)); r.setAttribute("y", String(baseline - size * 0.7));
       r.setAttribute("width", String(size * 0.45)); r.setAttribute("height", String(size * 0.7));
       r.setAttribute("fill", "none"); r.setAttribute("stroke", "#ff7a6b");
       svg.appendChild(r);
       cursor += size * 0.55;
-      return;
+      continue;
     }
-    const d = glyphToPathD(g, state.font.currentMasterId);
-    if (d) {
-      const p = document.createElementNS(SVGNS, "path");
-      p.setAttribute("d", d);
-      p.setAttribute("transform", `translate(${cursor} ${baseline}) scale(${s} ${-s})`);
-      p.setAttribute("fill", "#e8ecf1"); p.setAttribute("fill-rule", "evenodd");
-      glyphEls.push(p); svg.appendChild(p);
+    const g = findGlyph(state.font, item.name);
+    if (g) {
+      const d = glyphToPathDResolved(state.font, g, state.font.currentMasterId);
+      if (d) {
+        const p = document.createElementNS(SVGNS, "path");
+        p.setAttribute("d", d);
+        p.setAttribute("transform", `translate(${cursor} ${baseline}) scale(${s} ${-s})`);
+        p.setAttribute("fill", "#e8ecf1"); p.setAttribute("fill-rule", "evenodd");
+        svg.appendChild(p);
+      }
     }
-    let adv = (g.width || 0) * s;
-    if (nextName) adv += (getKern(state.font, g.name, nextName) || 0) * s;
-    cursor += adv;
-  });
+    cursor += item.advance * s;
+  }
   const totalW = Math.max(cursor + 12, 320);
   svg.setAttribute("viewBox", `0 0 ${totalW} ${proofH}`);
   svg.setAttribute("width", String(totalW));
@@ -279,6 +277,13 @@ function renderInspector(g: Glyph): void {
       <div class="field"><label>Left kerning group</label><input id="inspKgL" type="text" value="${escHtml(g.kerningGroupLeft || "")}" /></div>
       <div class="field"><label>Right kerning group</label><input id="inspKgR" type="text" value="${escHtml(g.kerningGroupRight || "")}" /></div>
     </div>
+    <div class="field-row">
+      <div class="field"><label>Left metrics key (glyph)</label><input id="inspMkL" type="text" value="${escHtml(g.metricsKeyLeft || "")}" placeholder="H" /></div>
+      <div class="field"><label>Right metrics key (glyph)</label><input id="inspMkR" type="text" value="${escHtml(g.metricsKeyRight || "")}" placeholder="H" /></div>
+    </div>
+    <div class="field"><button id="syncMetricsBtn" type="button">Sync bearings from metrics keys</button></div>
+    <div class="field"><label>Components (live from base glyphs)</label><div id="compList"></div></div>
+    <div class="field"><button id="addCompBtn" type="button">+ Component…</button></div>
     <p class="hint">Layer: ${layer.paths.length} contour(s), ${nodeCount} node(s) on master
       ${escHtml(state.font.masters.find((m) => m.id === state.font.currentMasterId)?.name || "")}.
       Arrows nudge the selected node (Shift = ×10).</p>
@@ -319,6 +324,45 @@ function renderInspector(g: Glyph): void {
   });
   bindChange(page.querySelector("#inspKgL"), (el) => { g.kerningGroupLeft = el.value.trim(); });
   bindChange(page.querySelector("#inspKgR"), (el) => { g.kerningGroupRight = el.value.trim(); });
+  bindChange(page.querySelector("#inspMkL"), (el) => { g.metricsKeyLeft = el.value.trim(); });
+  bindChange(page.querySelector("#inspMkR"), (el) => { g.metricsKeyRight = el.value.trim(); });
+  qs<HTMLButtonElement>(page, "#syncMetricsBtn").addEventListener("click", () => {
+    pushUndo();
+    const layerNow = layerOf(g);
+    if (g.metricsKeyLeft) {
+      const ref = findGlyph(state.font, g.metricsKeyLeft);
+      if (ref) {
+        const dx = ref.lsb - g.lsb;
+        for (const c of layerNow.paths) for (const n of c.nodes) n.x += dx;
+      }
+    }
+    if (g.metricsKeyRight) {
+      const ref = findGlyph(state.font, g.metricsKeyRight);
+      const b = glyphBounds(g, state.font.currentMasterId);
+      if (ref && b) g.width = Math.max(0, Math.round(b.maxX + ref.rsb));
+    }
+    syncBearings(state.font, g);
+    editor.refresh(state.font, g); renderAll();
+    setStatus("Bearings synced from metrics keys.");
+  });
+  const compList = qs<HTMLElement>(page, "#compList");
+  compList.innerHTML = (g.components || []).length
+    ? g.components.map((c, i) => `<div class="field-row"><span>${escHtml(c.glyph)} @ ${c.x}, ${c.y}</span><button data-comp-del="${i}" type="button">Remove</button></div>`).join("")
+    : '<span class="hint">No components — this glyph is plain paths.</span>';
+  compList.querySelectorAll<HTMLButtonElement>("[data-comp-del]").forEach((btn) => btn.addEventListener("click", () => {
+    pushUndo(); g.components.splice(Number(btn.dataset.compDel) || 0, 1);
+    editor.refresh(state.font, g); renderAll();
+  }));
+  qs<HTMLButtonElement>(page, "#addCompBtn").addEventListener("click", () => {
+    const baseName = prompt("Base glyph name for the component (e.g. e, acutecomb):", "e");
+    if (!baseName) return;
+    if (!findGlyph(state.font, baseName.trim())) { setStatus(`Glyph ${baseName} does not exist yet — add it first.`); return; }
+    pushUndo();
+    g.components = g.components || [];
+    g.components.push({ glyph: baseName.trim(), x: 0, y: 0, scaleX: 1, scaleY: 1 });
+    editor.refresh(state.font, g); renderAll();
+    setStatus(`Component ${baseName.trim()} added — it follows the base glyph live and decomposes on export.`);
+  });
   const list = qs<HTMLElement>(page, "#anchorList");
   list.innerHTML = (g.anchors || []).length
     ? g.anchors.map((a, i) => `<div class="field-row"><span>${escHtml(a.name)} (${a.x}, ${a.y})</span><button data-anchor-del="${i}" type="button">Remove</button></div>`).join("")
@@ -378,7 +422,16 @@ function renderPalette(g: Glyph): void {
       <button id="palFlipV" type="button">Flip vertical</button>
       <button id="palCopyLayer" type="button">Copy layer to new master…</button>
     </div>
-    <p class="hint">Handbook ref: Palette (p54) and Transformations (p56). Boolean operations, Fit Curve and extrude filters are deferred — transforms here are exact node math with undo.</p>`;
+    <div class="field"><label>Interpolation preview (first ↔ last master)</label>
+      <input id="palInterp" type="range" min="0" max="100" value="50" />
+      <span id="palInterpLabel" class="hint"></span>
+    </div>
+    <div class="field-row">
+      <button id="palExportInstance" type="button">Export instance UFO</button>
+      <button id="palFixDir" type="button">Fix path direction</button>
+    </div>
+    <div class="field"><button id="palUnion" type="button">Remove overlaps (union, flattens curves)</button></div>
+    <p class="hint">Handbook ref: Palette (p54), Transformations (p56), Interpolation (p150). Interpolation needs compatible masters (same contour/node order). Union flattens curves to lines — undo is available.</p>`;
   qs<HTMLButtonElement>(page, "#palApply").addEventListener("click", () => {
     pushUndo();
     const dx = +qs<HTMLInputElement>(page, "#palDx").value || 0;
@@ -407,6 +460,53 @@ function renderPalette(g: Glyph): void {
     transformLayer(g, (x, y) => [x, cy - y]);
     editor.refresh(state.font, g); renderAll();
     setStatus("Flipped vertically. Check path direction before export (Handbook p24).");
+  });
+  const interpSlider = qs<HTMLInputElement>(page, "#palInterp");
+  const interpLabel = qs<HTMLElement>(page, "#palInterpLabel");
+  const updateInterp = (): void => {
+    const t = (+interpSlider.value || 0) / 100;
+    const ig = interpolateGlyphAt(state.font, g.name, t);
+    if (!ig) {
+      interpLabel.textContent = state.font.masters.length < 2 ? "Add a second master to interpolate." : "Masters incompatible for this glyph (contour/node order differs).";
+      editor.setGhostD(null);
+      return;
+    }
+    interpLabel.textContent = `t=${t.toFixed(2)} between ${state.font.masters[0].name} and ${state.font.masters[state.font.masters.length - 1].name} — dashed green ghost in the editor.`;
+    editor.setGhostD(contoursToPathD(ig.layers[state.font.currentMasterId]?.paths ?? []));
+  };
+  interpSlider.addEventListener("input", updateInterp);
+  updateInterp();
+  qs<HTMLButtonElement>(page, "#palExportInstance").addEventListener("click", () => {
+    const t = (+interpSlider.value || 0) / 100;
+    if (!mastersCompatible(state.font, g.name) && state.font.masters.length >= 2) {
+      setStatus("Instance export needs compatible masters for every glyph — fix outline order first.");
+      return;
+    }
+    const instanceFont = cloneFont(state.font);
+    for (const glyph of instanceFont.glyphs) {
+      const ig = interpolateGlyphAt(instanceFont, glyph.name, t);
+      if (ig) glyph.layers[instanceFont.currentMasterId] = ig.layers[instanceFont.currentMasterId];
+    }
+    const base = (state.font.familyName || "Instance").replace(/[^\w\- ]/g, "").trim() || "Instance";
+    downloadBytes(`${base}-Instance.ufo.zip`, fontToUfoZip(instanceFont), "application/zip");
+    setStatus(`Exported instance UFO at t=${t.toFixed(2)} (decomposed, with designspace.json manifest).`);
+  });
+  qs<HTMLButtonElement>(page, "#palFixDir").addEventListener("click", () => {
+    pushUndo();
+    const layer = layerOf(g);
+    const changed = fixContourDirections(layer.paths);
+    syncBearings(state.font, g);
+    editor.refresh(state.font, g); renderAll();
+    setStatus(changed ? `Reversed ${changed} contour(s) to counter-clockwise.` : "All closed contours already run counter-clockwise.");
+  });
+  qs<HTMLButtonElement>(page, "#palUnion").addEventListener("click", () => {
+    pushUndo();
+    const layer = layerOf(g);
+    const before = layer.paths.length;
+    layer.paths = unionContours(layer.paths);
+    syncBearings(state.font, g);
+    editor.refresh(state.font, g); renderAll();
+    setStatus(`Remove overlaps: ${before} → ${layer.paths.length} contour(s). Curves were flattened — Ctrl+Z restores them.`);
   });
   qs<HTMLButtonElement>(page, "#palCopyLayer").addEventListener("click", () => {
     const name = prompt("New master name (e.g. Bold):", "Bold");
@@ -438,7 +538,16 @@ function renderKerning(): void {
     </div>
     <table class="kern"><thead><tr><th>Pair</th><th>Value</th><th></th></tr></thead>
     <tbody>${rows.map(([k, v]) => `<tr><td>${escHtml(k.replace("|", " → "))}</td><td><input data-kern-edit="${escHtml(k)}" type="number" value="${v}" /></td><td><button data-kern-del="${escHtml(k)}" type="button">Delete</button></td></tr>`).join("") || '<tr><td colspan="3">No pairs yet.</td></tr>'}</tbody></table>
-    <p class="hint">Kerning applies in the preview below and exports to UFO kerning.plist, .glyphs JSON and beta OTF. Handbook ref: Kerning (p120). Group kerning is stored per glyph in the Inspector; pair exceptions win here.</p>`;
+    <p class="hint">Kerning applies in the preview below and exports to UFO kerning.plist, .glyphs JSON and beta OTF. Handbook ref: Kerning (p120). Group kerning is stored per glyph in the Inspector; pair exceptions win here.</p>
+    <div class="field-row">
+      <div class="field"><label>Left group (right side)</label><input id="kernGL" type="text" placeholder="A" /></div>
+      <div class="field"><label>Right group (left side)</label><input id="kernGR" type="text" placeholder="V" /></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Group value</label><input id="kernGV" type="number" value="-40" /></div>
+      <div class="field"><label>&nbsp;</label><button id="kernGAdd" type="button">Add group pair</button></div>
+    </div>
+    <div id="kernGroups"></div>`;
   qs<HTMLButtonElement>(page, "#kernAdd").addEventListener("click", () => {
     const l = qs<HTMLInputElement>(page, "#kernL").value.trim();
     const r = qs<HTMLInputElement>(page, "#kernR").value.trim();
@@ -457,6 +566,43 @@ function renderKerning(): void {
     if (!key) return;
     pushUndo(); delete state.font.kerning[key]; renderAll();
   }));
+  const groupsEl = qs<HTMLElement>(page, "#kernGroups");
+  const groupRows = Object.entries(state.font.kerningGroups || {}).sort((a, b) => a[0].localeCompare(b[0]));
+  groupsEl.innerHTML = groupRows.length
+    ? `<table class="kern"><thead><tr><th>Group pair</th><th>Value</th><th></th></tr></thead><tbody>${groupRows.map(([k, v]) => `<tr><td>${escHtml(k.replace("|", " → "))}</td><td>${v}</td><td><button data-kern-gdel="${escHtml(k)}" type="button">Delete</button></td></tr>`).join("")}</tbody></table>`
+    : '<p class="hint">No group pairs yet. Set groups per glyph in the Inspector, then add the group value here.</p>';
+  groupsEl.querySelectorAll<HTMLButtonElement>("[data-kern-gdel]").forEach((btn) => btn.addEventListener("click", () => {
+    const key = btn.dataset.kernGdel;
+    if (!key) return;
+    pushUndo(); delete state.font.kerningGroups[key]; renderAll();
+  }));
+  qs<HTMLButtonElement>(page, "#kernGAdd").addEventListener("click", () => {
+    const l = qs<HTMLInputElement>(page, "#kernGL").value.trim();
+    const r = qs<HTMLInputElement>(page, "#kernGR").value.trim();
+    const v = +qs<HTMLInputElement>(page, "#kernGV").value || 0;
+    if (!l || !r) { setStatus("Enter both group names."); return; }
+    pushUndo(); state.font.kerningGroups[`${l}|${r}`] = v; renderAll();
+    setStatus(`Group kerning ${l} → ${r} = ${v} (pair exceptions still win).`);
+  });
+}
+
+function renderFeatures(): void {
+  const page = $("#side-features");
+  const parsed = parseFeatureCode(state.font.featureCode || "");
+  page.innerHTML = `
+    <div class="field"><label>Feature code (subset)</label>
+      <textarea id="featureCode" spellcheck="false">${escHtml(state.font.featureCode || "")}</textarea>
+    </div>
+    <div class="field"><button id="featureApply" type="button">Apply feature code</button></div>
+    <p class="hint">Parsed: ${parsed.classes.size} class(es), ${parsed.subs.length} substitution(s), ${parsed.poss.size} position pair(s). Supported: <span class="muted">@Class = [A B];</span>, <span class="muted">sub f i by fi;</span>, <span class="muted">pos A V -70;</span> (classes expand in pos). Applied live in the preview below. Handbook ref: Feature Code (p179).</p>
+    <p class="warn">Subset only: mark positioning, complex-script shaping and full OpenType layout are deferred — proof final fonts in a real shaper before shipping.</p>`;
+  qs<HTMLButtonElement>(page, "#featureApply").addEventListener("click", () => {
+    pushUndo();
+    state.font.featureCode = qs<HTMLTextAreaElement>(page, "#featureCode").value;
+    renderAll();
+    const p = parseFeatureCode(state.font.featureCode);
+    setStatus(`Feature code applied: ${p.subs.length} sub(s), ${p.poss.size} pos pair(s). Try the preview text “fi” or “AV”.`);
+  });
 }
 
 function renderFontInfo(): void {
@@ -476,8 +622,9 @@ function renderFontInfo(): void {
       <div class="field"><label>Cap height</label><input id="fiCap" type="number" value="${f.capHeight}" /></div>
       <div class="field"><label>x-height</label><input id="fiX" type="number" value="${f.xHeight}" /></div>
     </div>
-    <p class="hint"><strong>Masters:</strong> ${f.masters.map((m) => escHtml(m.name)).join(", ") || "—"}<br/>
-    <strong>Instances:</strong> ${f.instances.map((i) => escHtml(i.name)).join(", ") || "—"}</p>
+    <p class="hint"><strong>Masters:</strong> ${f.masters.map((m) => escHtml(`${m.name} (${m.weightValue})`)).join(", ") || "—"}<br/>
+    <strong>Instances:</strong> ${f.instances.map((i) => escHtml(i.name)).join(", ") || "—"}<br/>
+    <strong>Axes:</strong> ${(f.axes || []).map((a) => escHtml(`${a.name} ${a.min}…${a.max} (default ${a.defaultValue})`)).join(", ") || "—"}</p>
     <p class="hint">Handbook ref: Font Info (p85), Masters (p88), Exports (p92). Exports use the active master. Variable-font axes and custom parameters are deferred.</p>`;
   bindChange(page.querySelector("#fiFamily"), (el) => { f.familyName = el.value; });
   bindChange(page.querySelector("#fiVersion"), (el) => { f.version = el.value; });
@@ -488,11 +635,12 @@ function renderFontInfo(): void {
   bindChange(page.querySelector("#fiX"), (el) => { f.xHeight = +el.value || 0; });
 }
 
-function renderSide() {
+function renderSide(): void {
   const g = currentGlyph();
   renderInspector(g);
   renderPalette(g);
   renderKerning();
+  renderFeatures();
   renderFontInfo();
 }
 
@@ -512,12 +660,38 @@ function addGlyphFlow(): void {
     name: trimmed,
     unicode: [...trimmed].length === 1 ? (trimmed.codePointAt(0) ?? null) : null,
     width: 600, lsb: 40, rsb: 40, category: "Letter",
-    kerningGroupLeft: "", kerningGroupRight: "", anchors: [], layers: {},
+    kerningGroupLeft: "", kerningGroupRight: "", anchors: [], components: [],
+    metricsKeyLeft: "", metricsKeyRight: "", layers: {},
   };
   for (const m of state.font.masters) glyph.layers[m.id] = { paths: [] };
   state.font.glyphs.push(glyph);
+  // Auto-composite from the recipe table when every base glyph exists.
+  const recipe = compositeRecipe(trimmed);
+  if (recipe && recipe.every((base) => findGlyph(state.font, base))) {
+    glyph.components = recipe.map((base, idx) => ({
+      glyph: base, x: idx === 0 ? 0 : Math.round(glyph.width / 2 - 60), y: 0, scaleX: 1, scaleY: 1,
+    }));
+    openGlyph(trimmed, true);
+    setStatus(`Glyph ${trimmed} built as composite (${recipe.join(" + ")}). Edit the bases to update it live.`);
+    return;
+  }
   openGlyph(trimmed, true);
   setStatus(`Glyph ${trimmed} added — draw it with the Pen, or add Rect/Ellipse primitives.`);
+}
+
+function createCompositeFlow(): void {
+  const g = currentGlyph();
+  if (!g) return;
+  const recipe = compositeRecipe(g.name);
+  if (!recipe) { setStatus(`No recipe for ${g.name}. Add components manually in the Inspector.`); return; }
+  const missing = recipe.filter((base) => !findGlyph(state.font, base));
+  if (missing.length) { setStatus(`Missing base glyph(s): ${missing.join(", ")} — add them first.`); return; }
+  pushUndo();
+  g.components = recipe.map((base, idx) => ({
+    glyph: base, x: idx === 0 ? 0 : Math.round(g.width / 2 - 60), y: 0, scaleX: 1, scaleY: 1,
+  }));
+  editor.refresh(state.font, g); renderAll();
+  setStatus(`${g.name} is now a composite (${recipe.join(" + ")}).`);
 }
 
 async function handleOpenFile(file: File): Promise<void> {
@@ -545,7 +719,7 @@ function saveGlyphs() {
   downloadText(`${base}.glyphs`, fontToGlyphsJson(state.font));
   state.font.fileName = `${base}.glyphs`;
   renderHeader();
-  setStatus("Saved .glyphs (JSON subset). It reopens here; full Glyphs app compatibility needs the deferred plist writer.");
+  setStatus("Saved .glyphs (JSON subset, reopens here). Real Mac .glyphs files (OpenStep) also open here; saving stays JSON in this build.");
 }
 function exportUfo() {
   const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
@@ -587,6 +761,7 @@ function dispatch(cmd: string): void {
     case "toggle-guides": setStatus(`Guides ${editor.toggleGuides() ? "on" : "off"}.`); break;
     case "toggle-nodes": setStatus(`Nodes ${editor.toggleNodes() ? "shown" : "hidden"}.`); break;
     case "add-glyph": addGlyphFlow(); break;
+    case "create-composite": createCompositeFlow(); break;
     case "add-rect": if (g) editor.addContour(rectContour(80, 0, 360, 500)); break;
     case "add-ellipse": if (g) editor.addContour(ellipseContour(300, 250, 220, 250)); break;
     default: break;
