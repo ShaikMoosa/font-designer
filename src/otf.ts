@@ -1,9 +1,11 @@
 // Beta OTF export via opentype.js. Outlines are written from the current
 // master; unencoded glyphs are included as unmapped glyphs where possible.
 import opentype from "opentype.js";
-import { contourToPathD } from "./model.js";
+import type { Glyph as OtGlyph, Path as OtPath } from "opentype.js";
+import { contourToPathD } from "./model.ts";
+import type { Contour, Font } from "./model.ts";
 
-function contourCommands(contour, path) {
+function contourCommands(contour: Contour, path: OtPath): void {
   // Reuse the SVG segment walk by parsing our own "d" string back into
   // moveto/lineto/curveto commands (font coords are already Y-up).
   const d = contourToPathD(contour);
@@ -19,9 +21,9 @@ function contourCommands(contour, path) {
   }
 }
 
-export function fontToOtfArrayBuffer(font) {
+export function fontToOtfArrayBuffer(font: Font): ArrayBuffer {
   const masterId = font.currentMasterId;
-  const glyphs = [];
+  const glyphs: OtGlyph[] = [];
   glyphs.push(new opentype.Glyph({ name: ".notdef", unicode: 0, advanceWidth: 500, path: new opentype.Path() }));
   for (const g of font.glyphs) {
     const path = new opentype.Path();

@@ -1,34 +1,78 @@
 // SVG Edit View: pan/zoom, pen + select + hand tools, nodes/handles,
 // metrics and guides. Font coords are Y-up; screen coords are Y-down.
-import { contourToPathD, glyphBounds } from "./model.js";
+import { contourToPathD, glyphBounds } from "./model.ts";
+import type { Bounds, Contour, Font, FontNode, Glyph, GlyphLayer } from "./model.ts";
 
 const SVGNS = "http://www.w3.org/2000/svg";
-function el(tag, attrs = {}) {
-  const n = document.createElementNS(SVGNS, tag);
+function el(tag: string, attrs: Record<string, string | number> = {}): SVGElement {
+  const n = document.createElementNS(SVGNS, tag) as SVGElement;
   for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
   return n;
 }
 
-export function createEditor(svg, hooks) {
-  const state = {
+export type Tool = "select" | "pen" | "hand" | "text";
+export interface Selection { pathIdx: number; nodeIdx: number }
+export interface FontPoint { x: number; y: number }
+type Drag =
+  | { kind: "pan"; px: number; py: number; tx: number; ty: number }
+  | { kind: "pen"; pathIdx: number; nodeIdx: number; anchor: FontPoint; pulled: boolean }
+  | { kind: "node"; last: FontPoint; began: boolean };
+
+export interface EditorHooks {
+  onBeginChange?: (label: string) => void;
+  onMutate?: () => void;
+  onEndChange?: () => void;
+  onCoord?: (fp: FontPoint & { px: number; py: number }) => void;
+  onStatus?: (msg: string) => void;
+  onTextFocus?: () => void;
+  onRender?: (info: { bounds: Bounds | null; scale: number }) => void;
+}
+
+export interface Editor {
+  setGlyph: (font: Font | null, glyph: Glyph | null) => void;
+  render: () => void;
+  zoomFit: () => void;
+  refresh: (font: Font | null, glyph: Glyph | null) => void;
+  setTool: (tool: Tool) => void;
+  zoomBy: (f: number) => void;
+  toggleGuides: () => boolean;
+  toggleNodes: () => boolean;
+  deleteSelected: () => void;
+  closeActivePath: () => void;
+  convertSelected: () => void;
+  addContour: (contour: Contour) => void;
+  nudgeSelected: (dx: number, dy: number) => void;
+  getSelected: () => Selection | null;
+}
+
+interface EditorState {
+  font: Font | null; glyph: Glyph | null; tool: Tool;
+  scale: number; tx: number; ty: number;
+  showGuides: boolean; showNodes: boolean;
+  selected: Selection | null; activePathIdx: number;
+  pendingHandle: FontPoint | null; drag: Drag | null;
+}
+
+export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
+  const state: EditorState = {
     font: null, glyph: null, tool: "select",
     scale: 0.45, tx: 120, ty: 420,
     showGuides: true, showNodes: true,
-    selected: null, // {pathIdx, nodeIdx}
+    selected: null,
     activePathIdx: -1,
     pendingHandle: null,
     drag: null,
   };
 
-  function fontToScreen(x, y) {
+  function fontToScreen(x: number, y: number): FontPoint {
     return { x: x * state.scale + state.tx, y: -y * state.scale + state.ty };
   }
-  function screenToFont(sx, sy) {
+  function screenToFont(sx: number, sy: number): FontPoint & { px: number; py: number } {
     const rect = svg.getBoundingClientRect();
     const px = sx - rect.left, py = sy - rect.top;
     return { x: (px - state.tx) / state.scale, y: -(py - state.ty) / state.scale, px, py };
   }
-  function layer() {
+  function layer(): GlyphLayer | null {
     if (!state.font || !state.glyph) return null;
     const id = state.font.currentMasterId;
     if (!state.glyph.layers[id]) state.glyph.layers[id] = { paths: [] };
@@ -48,9 +92,11 @@ export function createEditor(svg, hooks) {
     render();
   }
 
-  function setGlyph(font, glyph) {
+  function setGlyph(font: Font | null, glyph: Glyph | null): void {
     state.font = font; state.glyph = glyph;
-    state.selected = null; state.activePathIdx = glyph ? (layer()?.paths.length ? layer().paths.length - 1 : -1) : -1;
+    state.selected = null;
+    const pathCount = layer()?.paths.length ?? 0;
+    state.activePathIdx = glyph ? (pathCount ? pathCount - 1 : -1) : -1;
     state.pendingHandle = null;
     zoomFit();
   }
@@ -69,7 +115,7 @@ export function createEditor(svg, hooks) {
     const gWorld = el("g", { transform: `translate(${state.tx} ${state.ty}) scale(${state.scale} ${-state.scale})` });
     const lineW = 1 / state.scale;
     // Em guides: baseline, x-height, cap, ascender, descender + bearings.
-    const guides = [
+    const guides: Array<[number, string]> = [
       [0, "baseline"], [font.xHeight, "x-height"], [font.capHeight, "cap"],
       [font.ascender, "ascender"], [font.descender, "descender"],
     ];
@@ -89,9 +135,10 @@ export function createEditor(svg, hooks) {
       gWorld.appendChild(gl);
     }
     const lay = layer();
+    if (!lay) return;
     // Closed contours share one path with evenodd fill so counters punch out;
     // open contours stay unfilled strokes.
-    const closedDs = [];
+    const closedDs: string[] = [];
     lay.paths.forEach((contour, pi) => {
       const d = contourToPathD(contour);
       if (!d) return;
@@ -134,7 +181,7 @@ export function createEditor(svg, hooks) {
         contour.nodes.forEach((nd, ni) => {
           const s = fontToScreen(nd.x, nd.y);
           const isSel = state.selected && state.selected.pathIdx === pi && state.selected.nodeIdx === ni;
-          let nodeEl;
+          let nodeEl: SVGElement;
           if (nd.type === "offcurve") {
             nodeEl = el("circle", { cx: s.x, cy: s.y, r: 4.5, class: `node-off${isSel ? " node-sel" : ""}` });
           } else {
@@ -151,18 +198,18 @@ export function createEditor(svg, hooks) {
     hooks.onRender?.({ bounds: b, scale: state.scale });
   }
 
-  function safeCapture(id) {
+  function safeCapture(id: number): void {
     try { svg.setPointerCapture(id); } catch { /* synthetic or inactive pointers still drag via bubbling */ }
   }
 
-  function activeContour() {
+  function activeContour(): Contour | null {
     const lay = layer();
     if (!lay) return null;
     if (state.activePathIdx < 0 || state.activePathIdx >= lay.paths.length) return null;
     return lay.paths[state.activePathIdx];
   }
 
-  function penDown(fp) {
+  function penDown(fp: FontPoint): void {
     const lay = layer();
     if (!lay) return;
     let contour = activeContour();
@@ -176,7 +223,7 @@ export function createEditor(svg, hooks) {
       contour.nodes.push({ x: Math.round(state.pendingHandle.x), y: Math.round(state.pendingHandle.y), type: "offcurve" });
       state.pendingHandle = null;
     }
-    const node = { x: Math.round(fp.x), y: Math.round(fp.y), type: "line" };
+    const node: FontNode = { x: Math.round(fp.x), y: Math.round(fp.y), type: "line" };
     contour.nodes.push(node);
     const nodeIdx = contour.nodes.length - 1;
     state.selected = { pathIdx: state.activePathIdx, nodeIdx };
@@ -185,7 +232,7 @@ export function createEditor(svg, hooks) {
     render();
   }
 
-  function penMove(fp) {
+  function penMove(fp: FontPoint): void {
     const d = state.drag;
     if (!d || d.kind !== "pen") return;
     const lay = layer(); if (!lay) return;
@@ -196,7 +243,7 @@ export function createEditor(svg, hooks) {
     anchor.type = "curve";
     // Ensure a mirrored handle before the anchor.
     const before = contour.nodes[d.nodeIdx - 1];
-    const mirror = { x: Math.round(d.anchor.x - dx), y: Math.round(d.anchor.y - dy), type: "offcurve" };
+    const mirror: FontNode = { x: Math.round(d.anchor.x - dx), y: Math.round(d.anchor.y - dy), type: "offcurve" };
     if (before && before.type === "offcurve") { before.x = mirror.x; before.y = mirror.y; }
     else { contour.nodes.splice(d.nodeIdx, 0, mirror); d.nodeIdx += 1; state.selected = { pathIdx: d.pathIdx, nodeIdx: d.nodeIdx }; }
     state.pendingHandle = { x: Math.round(fp.x), y: Math.round(fp.y) };
@@ -209,8 +256,9 @@ export function createEditor(svg, hooks) {
     svg.focus();
     if (!state.font || !state.glyph) return;
     const fp = screenToFont(ev.clientX, ev.clientY);
-    const pIdx = ev.target?.dataset?.pathIdx;
-    const nIdx = ev.target?.dataset?.nodeIdx;
+    const target = ev.target as SVGElement | null;
+    const pIdx = target?.dataset?.pathIdx;
+    const nIdx = target?.dataset?.nodeIdx;
     if (state.tool === "text") { hooks.onTextFocus?.(); return; }
     if (state.tool === "hand") {
       state.drag = { kind: "pan", px: fp.px, py: fp.py, tx: state.tx, ty: state.ty };
@@ -220,7 +268,7 @@ export function createEditor(svg, hooks) {
     if (state.tool === "pen") {
       // Clicking the first node of the active open path closes it.
       const contour = activeContour();
-      if (contour && !contour.closed && contour.nodes.length > 2 && pIdx !== undefined && +pIdx === state.activePathIdx && +nIdx === 0) {
+      if (contour && !contour.closed && contour.nodes.length > 2 && pIdx !== undefined && nIdx !== undefined && +pIdx === state.activePathIdx && +nIdx === 0) {
         hooks.onBeginChange?.("Close path");
         contour.closed = true; state.pendingHandle = null;
         hooks.onMutate?.(); hooks.onEndChange?.(); render();
@@ -247,26 +295,28 @@ export function createEditor(svg, hooks) {
   svg.addEventListener("pointermove", (ev) => {
     const fp = screenToFont(ev.clientX, ev.clientY);
     hooks.onCoord?.(fp);
-    if (!state.drag) return;
-    if (state.drag.kind === "pan") {
-      state.tx = state.drag.tx + (fp.px - state.drag.px);
-      state.ty = state.drag.ty + (fp.py - state.drag.py);
+    const drag = state.drag;
+    if (!drag) return;
+    if (drag.kind === "pan") {
+      state.tx = drag.tx + (fp.px - drag.px);
+      state.ty = drag.ty + (fp.py - drag.py);
       render(); return;
     }
-    if (state.drag.kind === "pen") { penMove(fp); return; }
-    if (state.drag.kind === "node" && state.selected) {
+    if (drag.kind === "pen") { penMove(fp); return; }
+    if (drag.kind === "node" && state.selected) {
       const lay = layer(); if (!lay) return;
       const node = lay.paths[state.selected.pathIdx]?.nodes[state.selected.nodeIdx];
       if (!node) return;
-      if (!state.drag.began) { hooks.onBeginChange?.("Move node"); state.drag.began = true; }
-      const dx = Math.round(fp.x - state.drag.last.x), dy = Math.round(fp.y - state.drag.last.y);
-      if (dx || dy) { node.x += dx; node.y += dy; state.drag.last = { x: fp.x, y: fp.y }; hooks.onMutate?.(); render(); }
+      if (!drag.began) { hooks.onBeginChange?.("Move node"); drag.began = true; }
+      const dx = Math.round(fp.x - drag.last.x), dy = Math.round(fp.y - drag.last.y);
+      if (dx || dy) { node.x += dx; node.y += dy; drag.last = { x: fp.x, y: fp.y }; hooks.onMutate?.(); render(); }
     }
   });
 
-  function endDrag() {
-    if (state.drag?.kind === "node" && state.drag.began) hooks.onEndChange?.();
-    if (state.drag?.kind === "pen") hooks.onEndChange?.();
+  function endDrag(): void {
+    const drag = state.drag;
+    if (drag?.kind === "node" && drag.began) hooks.onEndChange?.();
+    if (drag?.kind === "pen") hooks.onEndChange?.();
     state.drag = null;
   }
   svg.addEventListener("pointerup", endDrag);
@@ -284,7 +334,7 @@ export function createEditor(svg, hooks) {
     render();
   }, { passive: false });
 
-  function deleteSelected() {
+  function deleteSelected(): void {
     if (!state.selected) { hooks.onStatus?.("Select a node first, then Delete."); return; }
     const lay = layer(); if (!lay) return;
     const contour = lay.paths[state.selected.pathIdx]; if (!contour) return;
@@ -296,7 +346,7 @@ export function createEditor(svg, hooks) {
     hooks.onStatus?.("Node deleted.");
   }
 
-  function closeActivePath() {
+  function closeActivePath(): void {
     const contour = activeContour();
     if (!contour) { hooks.onStatus?.("No active path to close."); return; }
     hooks.onBeginChange?.("Close path");
@@ -304,7 +354,7 @@ export function createEditor(svg, hooks) {
     hooks.onMutate?.(); hooks.onEndChange?.(); render();
   }
 
-  function convertSelected() {
+  function convertSelected(): void {
     if (!state.selected) { hooks.onStatus?.("Select an on-curve node to convert it."); return; }
     const lay = layer(); if (!lay) return;
     const contour = lay.paths[state.selected.pathIdx];
@@ -316,8 +366,8 @@ export function createEditor(svg, hooks) {
       // Add symmetric handles toward neighbours so the curve is grabbable.
       const prev = contour.nodes[(state.selected.nodeIdx - 1 + contour.nodes.length) % contour.nodes.length];
       const next = contour.nodes[(state.selected.nodeIdx + 1) % contour.nodes.length];
-      const h1 = { x: Math.round(node.x + (prev.x - node.x) * 0.3), y: Math.round(node.y + (prev.y - node.y) * 0.3), type: "offcurve" };
-      const h2 = { x: Math.round(node.x + (next.x - node.x) * 0.3), y: Math.round(node.y + (next.y - node.y) * 0.3), type: "offcurve" };
+      const h1: FontNode = { x: Math.round(node.x + (prev.x - node.x) * 0.3), y: Math.round(node.y + (prev.y - node.y) * 0.3), type: "offcurve" };
+      const h2: FontNode = { x: Math.round(node.x + (next.x - node.x) * 0.3), y: Math.round(node.y + (next.y - node.y) * 0.3), type: "offcurve" };
       contour.nodes.splice(state.selected.nodeIdx, 0, h1);
       contour.nodes.splice(state.selected.nodeIdx + 2, 0, h2);
       state.selected = { pathIdx: state.selected.pathIdx, nodeIdx: state.selected.nodeIdx + 1 };
@@ -335,7 +385,7 @@ export function createEditor(svg, hooks) {
     hooks.onMutate?.(); hooks.onEndChange?.(); render();
   }
 
-  function addContour(contour) {
+  function addContour(contour: Contour): void {
     const lay = layer(); if (!lay) return;
     hooks.onBeginChange?.("Add shape");
     lay.paths.push(contour);
@@ -343,7 +393,7 @@ export function createEditor(svg, hooks) {
     hooks.onMutate?.(); hooks.onEndChange?.(); render();
   }
 
-  function nudgeSelected(dx, dy) {
+  function nudgeSelected(dx: number, dy: number): void {
     if (!state.selected) return;
     const lay = layer(); if (!lay) return;
     const node = lay.paths[state.selected.pathIdx]?.nodes[state.selected.nodeIdx];
@@ -355,9 +405,9 @@ export function createEditor(svg, hooks) {
 
   return {
     setGlyph, render, zoomFit,
-    refresh(font, glyph) { state.font = font; state.glyph = glyph; render(); },
-    setTool(tool) { state.tool = tool; render(); },
-    zoomBy(f) {
+    refresh(font: Font | null, glyph: Glyph | null) { state.font = font; state.glyph = glyph; render(); },
+    setTool(tool: Tool) { state.tool = tool; render(); },
+    zoomBy(f: number) {
       const rect = svg.getBoundingClientRect();
       const cx = rect.width / 2, cy = rect.height / 2;
       const fx = (cx - state.tx) / state.scale, fy = -(cy - state.ty) / state.scale;

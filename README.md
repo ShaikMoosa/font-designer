@@ -13,7 +13,8 @@ npm run dev
 
 Then open the URL Vite prints (default http://127.0.0.1:5173/) in a browser.
 
-Other commands: `npm run build`, `npm run preview`, `npm test`.
+Other commands: `npm run build`, `npm run preview`, `npm test`, `npm run typecheck`.
+The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.ts` via Node type stripping.
 
 ## What works
 

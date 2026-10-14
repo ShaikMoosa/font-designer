@@ -3,14 +3,23 @@
 import {
   createDefaultFont, findGlyph, glyphToPathD, glyphBounds, syncBearings,
   cloneFont, getKern, kernKey, rectContour, ellipseContour,
-} from "./model.js";
-import { fontToGlyphsJson, glyphsJsonToFont, downloadText, downloadBytes } from "./glyphs-io.js";
-import { fontToUfoZip, unzipToMap, ufoMapToFont } from "./ufo.js";
-import { fontToOtfArrayBuffer } from "./otf.js";
-import { createEditor } from "./editor.js";
+} from "./model.ts";
+import type { Font, Glyph, GlyphLayer } from "./model.ts";
+import { fontToGlyphsJson, glyphsJsonToFont, downloadText, downloadBytes } from "./glyphs-io.ts";
+import { fontToUfoZip, unzipToMap, ufoMapToFont } from "./ufo.ts";
+import { fontToOtfArrayBuffer } from "./otf.ts";
+import { createEditor } from "./editor.ts";
+import type { Tool } from "./editor.ts";
 
-const $ = (sel) => document.querySelector(sel);
-const state = {
+function $<T extends Element>(sel: string): T { return document.querySelector(sel) as T; }
+function qs<T extends HTMLElement>(root: ParentNode, sel: string): T { return root.querySelector(sel) as T; }
+
+interface AppState {
+  font: Font; currentGlyphName: string; openTabs: string[];
+  undoStack: Font[]; redoStack: Font[]; fontViewMode: "grid" | "list";
+}
+
+const state: AppState = {
   font: createDefaultFont(),
   currentGlyphName: "A",
   openTabs: ["A"],
@@ -18,10 +27,10 @@ const state = {
   fontViewMode: "grid",
 };
 
-function currentGlyph() { return findGlyph(state.font, state.currentGlyphName) || state.font.glyphs[0]; }
-function setStatus(msg) { $("#statusMsg").textContent = msg; }
+function currentGlyph(): Glyph { return findGlyph(state.font, state.currentGlyphName) || state.font.glyphs[0]; }
+function setStatus(msg: string): void { $("#statusMsg").textContent = msg; }
 
-const editor = createEditor($("#editorSvg"), {
+const editor = createEditor($<SVGSVGElement>("#editorSvg"), {
   onBeginChange() { pushUndo(); },
   onMutate() { renderDynamic(false); },
   onEndChange() {
@@ -33,7 +42,7 @@ const editor = createEditor($("#editorSvg"), {
     $("#coordReadout").textContent = `${Math.round(fp.x)}, ${Math.round(fp.y)}`;
   },
   onStatus(msg) { setStatus(msg); },
-  onTextFocus() { $("#previewText").focus(); $("#previewText").select(); },
+  onTextFocus() { const input = $<HTMLInputElement>("#previewText"); input.focus(); input.select(); },
   onRender() { /* status line updated in renderDynamic */ },
 });
 
@@ -42,19 +51,23 @@ function pushUndo() {
   if (state.undoStack.length > 60) state.undoStack.shift();
   state.redoStack = [];
 }
-function undo() {
+function undo(): void {
   if (!state.undoStack.length) { setStatus("Nothing to undo."); return; }
   state.redoStack.push(cloneFont(state.font));
-  state.font = state.undoStack.pop();
+  const prev = state.undoStack.pop();
+  if (!prev) return;
+  state.font = prev;
   ensureCurrentGlyph();
   editor.setGlyph(state.font, currentGlyph());
   renderAll();
   setStatus("Undone.");
 }
-function redo() {
+function redo(): void {
   if (!state.redoStack.length) { setStatus("Nothing to redo."); return; }
   state.undoStack.push(cloneFont(state.font));
-  state.font = state.redoStack.pop();
+  const next = state.redoStack.pop();
+  if (!next) return;
+  state.font = next;
   ensureCurrentGlyph();
   editor.setGlyph(state.font, currentGlyph());
   renderAll();
@@ -70,7 +83,7 @@ function ensureCurrentGlyph() {
   }
 }
 
-function openGlyph(name, refit = true) {
+function openGlyph(name: string, refit = true): void {
   const g = findGlyph(state.font, name);
   if (!g) return;
   state.currentGlyphName = name;
@@ -79,8 +92,9 @@ function openGlyph(name, refit = true) {
   renderAll();
 }
 
-function drawThumb(canvas, glyph) {
+function drawThumb(canvas: HTMLCanvasElement, glyph: Glyph): void {
   const ctx = canvas.getContext("2d");
+  if (!ctx) return;
   const w = canvas.width = 104, h = canvas.height = 88;
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#e8ecf1";
@@ -103,7 +117,7 @@ function drawThumb(canvas, glyph) {
 
 function renderFontView() {
   const grid = $("#glyphGrid");
-  const q = ($("#glyphSearch").value || "").trim().toLowerCase();
+  const q = ($<HTMLInputElement>("#glyphSearch").value || "").trim().toLowerCase();
   grid.className = `glyph-grid${state.fontViewMode === "list" ? " list-mode" : ""}`;
   grid.innerHTML = "";
   const shown = state.font.glyphs.filter((g) => !q || g.name.toLowerCase().includes(q));
@@ -133,7 +147,7 @@ function renderTabs() {
   tabs.innerHTML = "";
   const fv = document.createElement("button");
   fv.className = "tab"; fv.type = "button"; fv.textContent = "Font View";
-  fv.addEventListener("click", () => { $("#glyphSearch").focus(); });
+  fv.addEventListener("click", () => { $<HTMLInputElement>("#glyphSearch").focus(); });
   tabs.appendChild(fv);
   for (const name of state.openTabs) {
     const b = document.createElement("button");
@@ -146,7 +160,7 @@ function renderTabs() {
 
 function renderHeader() {
   $("#docName").textContent = state.font.fileName || "Untitled.glyphs";
-  const sel = $("#masterSelect");
+  const sel = $<HTMLSelectElement>("#masterSelect");
   sel.innerHTML = "";
   for (const m of state.font.masters) {
     const opt = document.createElement("option");
@@ -176,19 +190,19 @@ function renderAll() {
   renderPreview();
 }
 
-function escHtml(s) {
+function escHtml(s: string): string {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 const SVGNS = "http://www.w3.org/2000/svg";
 function renderPreview() {
-  const svg = $("#previewSvg");
+  const svg = $<SVGSVGElement>("#previewSvg");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
-  const text = $("#previewText").value || "";
-  const size = +$("#previewSize").value || 72;
+  const text = $<HTMLInputElement>("#previewText").value || "";
+  const size = +$<HTMLInputElement>("#previewSize").value || 72;
   const upm = state.font.unitsPerEm || 1000;
   const s = size / upm;
-  const byChar = new Map();
+  const byChar = new Map<string, Glyph>();
   for (const g of state.font.glyphs) {
     if (g.unicode != null) byChar.set(String.fromCodePoint(g.unicode), g);
   }
@@ -198,14 +212,14 @@ function renderPreview() {
   const proofH = Math.round(size * 1.35) + 24;
   const baseline = proofH - 20;
   svg.style.height = `${proofH}px`;
-  const glyphEls = [];
+  const glyphEls: SVGPathElement[] = [];
   [...text].forEach((ch, idx) => {
     const g = byChar.get(ch);
     const nextName = names[idx + 1];
     if (!g) {
       const r = document.createElementNS(SVGNS, "rect");
-      r.setAttribute("x", cursor); r.setAttribute("y", baseline - size * 0.7);
-      r.setAttribute("width", size * 0.45); r.setAttribute("height", size * 0.7);
+      r.setAttribute("x", String(cursor)); r.setAttribute("y", String(baseline - size * 0.7));
+      r.setAttribute("width", String(size * 0.45)); r.setAttribute("height", String(size * 0.7));
       r.setAttribute("fill", "none"); r.setAttribute("stroke", "#ff7a6b");
       svg.appendChild(r);
       cursor += size * 0.55;
@@ -225,26 +239,26 @@ function renderPreview() {
   });
   const totalW = Math.max(cursor + 12, 320);
   svg.setAttribute("viewBox", `0 0 ${totalW} ${proofH}`);
-  svg.setAttribute("width", totalW);
+  svg.setAttribute("width", String(totalW));
   const bl = document.createElementNS(SVGNS, "line");
-  bl.setAttribute("x1", 0); bl.setAttribute("x2", totalW);
-  bl.setAttribute("y1", baseline); bl.setAttribute("y2", baseline);
+  bl.setAttribute("x1", "0"); bl.setAttribute("x2", String(totalW));
+  bl.setAttribute("y1", String(baseline)); bl.setAttribute("y2", String(baseline));
   bl.setAttribute("stroke", "#3a424e");
   svg.appendChild(bl);
 }
 
-function layerOf(glyph) {
+function layerOf(glyph: Glyph): GlyphLayer {
   const id = state.font.currentMasterId;
   if (!glyph.layers[id]) glyph.layers[id] = { paths: [] };
   return glyph.layers[id];
 }
 
-function bindChange(el, fn) {
+function bindChange(el: Element | null, fn: (el: HTMLInputElement) => void): void {
   if (!el) return;
-  el.addEventListener("change", () => { pushUndo(); fn(el); editor.refresh(state.font, currentGlyph()); renderAll(); });
+  el.addEventListener("change", () => { pushUndo(); fn(el as HTMLInputElement); editor.refresh(state.font, currentGlyph()); renderAll(); });
 }
 
-function renderInspector(g) {
+function renderInspector(g: Glyph): void {
   const page = $("#side-inspector");
   if (!g) { page.innerHTML = '<p class="hint">No glyph selected.</p>'; return; }
   const layer = layerOf(g);
@@ -280,7 +294,7 @@ function renderInspector(g) {
     g.name = next;
     state.openTabs = state.openTabs.map((n) => (n === old ? next : n));
     state.currentGlyphName = next;
-    const kern = {};
+    const kern: Record<string, number> = {};
     for (const [k, v] of Object.entries(state.font.kerning)) {
       const [l, r] = k.split("|");
       kern[`${l === old ? next : l}|${r === old ? next : r}`] = v;
@@ -305,15 +319,15 @@ function renderInspector(g) {
   });
   bindChange(page.querySelector("#inspKgL"), (el) => { g.kerningGroupLeft = el.value.trim(); });
   bindChange(page.querySelector("#inspKgR"), (el) => { g.kerningGroupRight = el.value.trim(); });
-  const list = page.querySelector("#anchorList");
+  const list = qs<HTMLElement>(page, "#anchorList");
   list.innerHTML = (g.anchors || []).length
     ? g.anchors.map((a, i) => `<div class="field-row"><span>${escHtml(a.name)} (${a.x}, ${a.y})</span><button data-anchor-del="${i}" type="button">Remove</button></div>`).join("")
     : '<span class="hint">No anchors yet.</span>';
-  list.querySelectorAll("[data-anchor-del]").forEach((btn) => btn.addEventListener("click", () => {
-    pushUndo(); g.anchors.splice(+btn.dataset.anchorDel, 1);
+  list.querySelectorAll<HTMLButtonElement>("[data-anchor-del]").forEach((btn) => btn.addEventListener("click", () => {
+    pushUndo(); g.anchors.splice(Number(btn.dataset.anchorDel) || 0, 1);
     editor.refresh(state.font, g); renderAll();
   }));
-  page.querySelector("#addAnchorBtn").addEventListener("click", () => {
+  qs<HTMLButtonElement>(page, "#addAnchorBtn").addEventListener("click", () => {
     pushUndo();
     const b = glyphBounds(g, state.font.currentMasterId);
     const cx = b ? Math.round((b.minX + b.maxX) / 2) : Math.round(g.width / 2);
@@ -322,7 +336,7 @@ function renderInspector(g) {
     editor.refresh(state.font, g); renderAll();
     setStatus("Anchor added — anchors export to UFO/GLIF.");
   });
-  page.querySelector("#deleteGlyphBtn").addEventListener("click", () => {
+  qs<HTMLButtonElement>(page, "#deleteGlyphBtn").addEventListener("click", () => {
     if (state.font.glyphs.length <= 1) { setStatus("Keep at least one glyph."); return; }
     if (!confirm(`Delete glyph ${g.name}?`)) return;
     pushUndo();
@@ -333,7 +347,7 @@ function renderInspector(g) {
   });
 }
 
-function transformLayer(g, fn) {
+function transformLayer(g: Glyph, fn: (x: number, y: number) => [number, number]): void {
   const layer = layerOf(g);
   for (const c of layer.paths) for (const n of c.nodes) {
     const r = fn(n.x, n.y); n.x = Math.round(r[0]); n.y = Math.round(r[1]);
@@ -341,7 +355,7 @@ function transformLayer(g, fn) {
   syncBearings(state.font, g);
 }
 
-function renderPalette(g) {
+function renderPalette(g: Glyph): void {
   const page = $("#side-palette");
   if (!g) { page.innerHTML = '<p class="hint">No glyph selected.</p>'; return; }
   const b = glyphBounds(g, state.font.currentMasterId);
@@ -365,12 +379,12 @@ function renderPalette(g) {
       <button id="palCopyLayer" type="button">Copy layer to new master…</button>
     </div>
     <p class="hint">Handbook ref: Palette (p54) and Transformations (p56). Boolean operations, Fit Curve and extrude filters are deferred — transforms here are exact node math with undo.</p>`;
-  page.querySelector("#palApply").addEventListener("click", () => {
+  qs<HTMLButtonElement>(page, "#palApply").addEventListener("click", () => {
     pushUndo();
-    const dx = +page.querySelector("#palDx").value || 0;
-    const dy = +page.querySelector("#palDy").value || 0;
-    const sc = (+page.querySelector("#palScale").value || 100) / 100;
-    const rad = ((+page.querySelector("#palRot").value || 0) * Math.PI) / 180;
+    const dx = +qs<HTMLInputElement>(page, "#palDx").value || 0;
+    const dy = +qs<HTMLInputElement>(page, "#palDy").value || 0;
+    const sc = (+qs<HTMLInputElement>(page, "#palScale").value || 100) / 100;
+    const rad = ((+qs<HTMLInputElement>(page, "#palRot").value || 0) * Math.PI) / 180;
     const cos = Math.cos(rad), sin = Math.sin(rad);
     transformLayer(g, (x, y) => {
       const rx = x * cos - y * sin, ry = x * sin + y * cos;
@@ -379,7 +393,7 @@ function renderPalette(g) {
     editor.refresh(state.font, g); renderAll();
     setStatus("Transform applied (Ctrl+Z to undo).");
   });
-  page.querySelector("#palFlipH").addEventListener("click", () => {
+  qs<HTMLButtonElement>(page, "#palFlipH").addEventListener("click", () => {
     if (!b) return; pushUndo();
     const cx = b.minX + b.maxX;
     transformLayer(g, (x, y) => [cx - x, y]);
@@ -387,14 +401,14 @@ function renderPalette(g) {
     editor.refresh(state.font, g); renderAll();
     setStatus("Flipped horizontally. Check path direction before export (Handbook p24).");
   });
-  page.querySelector("#palFlipV").addEventListener("click", () => {
+  qs<HTMLButtonElement>(page, "#palFlipV").addEventListener("click", () => {
     if (!b) return; pushUndo();
     const cy = b.minY + b.maxY;
     transformLayer(g, (x, y) => [x, cy - y]);
     editor.refresh(state.font, g); renderAll();
     setStatus("Flipped vertically. Check path direction before export (Handbook p24).");
   });
-  page.querySelector("#palCopyLayer").addEventListener("click", () => {
+  qs<HTMLButtonElement>(page, "#palCopyLayer").addEventListener("click", () => {
     const name = prompt("New master name (e.g. Bold):", "Bold");
     if (!name) return;
     pushUndo();
@@ -410,7 +424,7 @@ function renderPalette(g) {
   });
 }
 
-function renderKerning() {
+function renderKerning(): void {
   const page = $("#side-kerning");
   const rows = Object.entries(state.font.kerning).sort((a, b) => a[0].localeCompare(b[0]));
   page.innerHTML = `
@@ -425,23 +439,27 @@ function renderKerning() {
     <table class="kern"><thead><tr><th>Pair</th><th>Value</th><th></th></tr></thead>
     <tbody>${rows.map(([k, v]) => `<tr><td>${escHtml(k.replace("|", " → "))}</td><td><input data-kern-edit="${escHtml(k)}" type="number" value="${v}" /></td><td><button data-kern-del="${escHtml(k)}" type="button">Delete</button></td></tr>`).join("") || '<tr><td colspan="3">No pairs yet.</td></tr>'}</tbody></table>
     <p class="hint">Kerning applies in the preview below and exports to UFO kerning.plist, .glyphs JSON and beta OTF. Handbook ref: Kerning (p120). Group kerning is stored per glyph in the Inspector; pair exceptions win here.</p>`;
-  page.querySelector("#kernAdd").addEventListener("click", () => {
-    const l = page.querySelector("#kernL").value.trim();
-    const r = page.querySelector("#kernR").value.trim();
-    const v = +page.querySelector("#kernV").value || 0;
+  qs<HTMLButtonElement>(page, "#kernAdd").addEventListener("click", () => {
+    const l = qs<HTMLInputElement>(page, "#kernL").value.trim();
+    const r = qs<HTMLInputElement>(page, "#kernR").value.trim();
+    const v = +qs<HTMLInputElement>(page, "#kernV").value || 0;
     if (!l || !r) { setStatus("Enter both glyph names for the pair."); return; }
     pushUndo(); state.font.kerning[kernKey(l, r)] = v; renderAll();
     setStatus(`Kerning ${l} → ${r} = ${v}. Watch the preview update.`);
   });
-  page.querySelectorAll("[data-kern-edit]").forEach((input) => input.addEventListener("change", () => {
-    pushUndo(); state.font.kerning[input.dataset.kernEdit] = +input.value || 0; renderAll();
+  page.querySelectorAll<HTMLInputElement>("[data-kern-edit]").forEach((input) => input.addEventListener("change", () => {
+    const key = input.dataset.kernEdit;
+    if (!key) return;
+    pushUndo(); state.font.kerning[key] = +input.value || 0; renderAll();
   }));
-  page.querySelectorAll("[data-kern-del]").forEach((btn) => btn.addEventListener("click", () => {
-    pushUndo(); delete state.font.kerning[btn.dataset.kernDel]; renderAll();
+  page.querySelectorAll<HTMLButtonElement>("[data-kern-del]").forEach((btn) => btn.addEventListener("click", () => {
+    const key = btn.dataset.kernDel;
+    if (!key) return;
+    pushUndo(); delete state.font.kerning[key]; renderAll();
   }));
 }
 
-function renderFontInfo() {
+function renderFontInfo(): void {
   const page = $("#side-fontinfo");
   const f = state.font;
   page.innerHTML = `
@@ -478,21 +496,21 @@ function renderSide() {
   renderFontInfo();
 }
 
-function setTool(tool) {
+function setTool(tool: Tool): void {
   editor.setTool(tool);
-  document.querySelectorAll("[data-tool]").forEach((b) => b.classList.toggle("is-on", b.dataset.tool === tool));
+  document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((b) => b.classList.toggle("is-on", b.dataset.tool === tool));
   setStatus(tool === "pen" ? "Pen: click to place nodes, drag to pull handles, click the first node to close." : tool === "hand" ? "Hand: drag to pan, wheel to zoom." : tool === "text" ? "Text: type in Preview below; red boxes mean the glyph is missing." : "Select: drag white nodes and blue handles; arrows nudge.");
 }
 
-function addGlyphFlow() {
+function addGlyphFlow(): void {
   const name = prompt("Glyph name (e.g. B, eacute, or a single character):", "B");
   if (!name) return;
   const trimmed = name.trim();
   if (findGlyph(state.font, trimmed)) { setStatus(`Glyph ${trimmed} already exists.`); return; }
   pushUndo();
-  const glyph = {
+  const glyph: Glyph = {
     name: trimmed,
-    unicode: [...trimmed].length === 1 ? trimmed.codePointAt(0) : null,
+    unicode: [...trimmed].length === 1 ? (trimmed.codePointAt(0) ?? null) : null,
     width: 600, lsb: 40, rsb: 40, category: "Letter",
     kerningGroupLeft: "", kerningGroupRight: "", anchors: [], layers: {},
   };
@@ -502,7 +520,7 @@ function addGlyphFlow() {
   setStatus(`Glyph ${trimmed} added — draw it with the Pen, or add Rect/Ellipse primitives.`);
 }
 
-async function handleOpenFile(file) {
+async function handleOpenFile(file: File): Promise<void> {
   try {
     if (/\.zip$/i.test(file.name)) {
       const map = await unzipToMap(await file.arrayBuffer());
@@ -518,7 +536,7 @@ async function handleOpenFile(file) {
     renderAll();
     setStatus(`Opened ${file.name} — ${state.font.glyphs.length} glyphs, master ${state.font.currentMasterId}.`);
   } catch (err) {
-    setStatus(`Open failed: ${err.message}`);
+    setStatus(`Open failed: ${(err as Error).message}`);
   }
 }
 
@@ -541,11 +559,11 @@ function exportOtf() {
     downloadBytes(`${base}.otf`, new Uint8Array(buf), "font/otf");
     setStatus("Exported beta OTF from the active master. Proof it before shipping — hinting and OpenType features are deferred.");
   } catch (err) {
-    setStatus(`OTF export failed: ${err.message}`);
+    setStatus(`OTF export failed: ${(err as Error).message}`);
   }
 }
 
-function dispatch(cmd) {
+function dispatch(cmd: string): void {
   const g = currentGlyph();
   switch (cmd) {
     case "new":
@@ -554,7 +572,7 @@ function dispatch(cmd) {
       state.currentGlyphName = "A"; state.openTabs = ["A"];
       editor.setGlyph(state.font, currentGlyph()); renderAll(); setStatus("New font — Handbook Sans starter set.");
       break;
-    case "open": $("#fileInput").click(); break;
+    case "open": $<HTMLInputElement>("#fileInput").click(); break;
     case "save-glyphs": saveGlyphs(); break;
     case "export-ufo": exportUfo(); break;
     case "export-otf": exportOtf(); break;
@@ -575,29 +593,31 @@ function dispatch(cmd) {
   }
 }
 
-document.querySelectorAll("[data-cmd]").forEach((b) => b.addEventListener("click", () => dispatch(b.dataset.cmd)));
-document.querySelectorAll("[data-tool]").forEach((b) => b.addEventListener("click", () => setTool(b.dataset.tool)));
-document.querySelectorAll("[data-side]").forEach((b) => b.addEventListener("click", () => {
-  document.querySelectorAll("[data-side]").forEach((x) => x.classList.toggle("is-on", x === b));
-  document.querySelectorAll(".side-page").forEach((p) => p.classList.toggle("is-on", p.id === `side-${b.dataset.side}`));
+document.querySelectorAll<HTMLButtonElement>("[data-cmd]").forEach((b) => b.addEventListener("click", () => { const cmd = b.dataset.cmd; if (cmd) dispatch(cmd); }));
+document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((b) => b.addEventListener("click", () => setTool((b.dataset.tool || "select") as Tool)));
+document.querySelectorAll<HTMLButtonElement>("[data-side]").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll<HTMLButtonElement>("[data-side]").forEach((x) => x.classList.toggle("is-on", x === b));
+  document.querySelectorAll<HTMLElement>(".side-page").forEach((p) => p.classList.toggle("is-on", p.id === `side-${b.dataset.side}`));
 }));
 $("#gridModeBtn").addEventListener("click", () => { state.fontViewMode = "grid"; renderFontView(); });
 $("#listModeBtn").addEventListener("click", () => { state.fontViewMode = "list"; renderFontView(); });
-$("#glyphSearch").addEventListener("input", renderFontView);
+$<HTMLInputElement>("#glyphSearch").addEventListener("input", renderFontView);
 $("#addGlyphBtn").addEventListener("click", addGlyphFlow);
-$("#masterSelect").addEventListener("change", (ev) => {
-  state.font.currentMasterId = ev.target.value;
+$<HTMLSelectElement>("#masterSelect").addEventListener("change", (ev) => {
+  const target = ev.target as HTMLSelectElement;
+  state.font.currentMasterId = target.value;
   editor.refresh(state.font, currentGlyph());
   renderAll();
-  setStatus(`Active master: ${state.font.masters.find((m) => m.id === ev.target.value)?.name}.`);
+  setStatus(`Active master: ${state.font.masters.find((m) => m.id === target.value)?.name}.`);
 });
-$("#fileInput").addEventListener("change", (ev) => {
-  const f = ev.target.files?.[0];
-  if (f) handleOpenFile(f);
-  ev.target.value = "";
+$<HTMLInputElement>("#fileInput").addEventListener("change", (ev) => {
+  const input = ev.target as HTMLInputElement;
+  const f = input.files?.[0];
+  if (f) void handleOpenFile(f);
+  input.value = "";
 });
-$("#previewText").addEventListener("input", renderPreview);
-$("#previewSize").addEventListener("input", renderPreview);
+$<HTMLInputElement>("#previewText").addEventListener("input", renderPreview);
+$<HTMLInputElement>("#previewSize").addEventListener("input", renderPreview);
 $("#rectBtn").addEventListener("click", () => dispatch("add-rect"));
 $("#ellipseBtn").addEventListener("click", () => dispatch("add-ellipse"));
 $("#closePathBtn").addEventListener("click", () => dispatch("close-path"));
@@ -630,7 +650,7 @@ document.addEventListener("keydown", (ev) => {
   if (k === "v") setTool("select");
   if (k === "p") setTool("pen");
   if (k === "h") setTool("hand");
-  if (k === "t") { setTool("text"); $("#previewText").focus(); }
+  if (k === "t") { setTool("text"); $<HTMLInputElement>("#previewText").focus(); }
 });
 
 // Boot.

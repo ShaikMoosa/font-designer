@@ -2,20 +2,40 @@
 // baseline y=0. A glyph stores width/lsb/rsb plus one layer per master.
 // Each layer holds contours; a contour is an ordered node list where
 // type is "line" | "curve" | "smooth" (on-curve) or "offcurve" (handle).
+export type NodeType = "line" | "curve" | "smooth" | "offcurve";
+export interface FontNode { x: number; y: number; type: NodeType }
+export interface Contour { closed: boolean; nodes: FontNode[] }
+export interface GlyphLayer { paths: Contour[] }
+export interface Anchor { name: string; x: number; y: number }
+export interface Glyph {
+  name: string; unicode: number | null; width: number; lsb: number; rsb: number;
+  category: string; kerningGroupLeft: string; kerningGroupRight: string;
+  anchors: Anchor[]; layers: Record<string, GlyphLayer>;
+}
+export interface FontMaster { id: string; name: string; weightValue: number }
+export interface FontInstance { name: string; masterId: string; active: boolean }
+export interface Font {
+  familyName: string; version: string; unitsPerEm: number;
+  ascender: number; descender: number; capHeight: number; xHeight: number;
+  masters: FontMaster[]; instances: FontInstance[]; glyphs: Glyph[];
+  kerning: Record<string, number>; currentMasterId: string; fileName: string;
+}
+export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
+
 export const KAPPA = 0.5522847498307936;
 
-export function lineNode(x, y) { return { x: Math.round(x), y: Math.round(y), type: "line" }; }
-export function curveNode(x, y) { return { x: Math.round(x), y: Math.round(y), type: "curve" }; }
-export function offNode(x, y) { return { x: Math.round(x), y: Math.round(y), type: "offcurve" }; }
+export function lineNode(x: number, y: number): FontNode { return { x: Math.round(x), y: Math.round(y), type: "line" }; }
+export function curveNode(x: number, y: number): FontNode { return { x: Math.round(x), y: Math.round(y), type: "curve" }; }
+export function offNode(x: number, y: number): FontNode { return { x: Math.round(x), y: Math.round(y), type: "offcurve" }; }
 
-export function rectContour(x, y, w, h) {
+export function rectContour(x: number, y: number, w: number, h: number): Contour {
   return {
     closed: true,
     nodes: [lineNode(x, y), lineNode(x + w, y), lineNode(x + w, y + h), lineNode(x, y + h)],
   };
 }
 
-export function ellipseContour(cx, cy, rx, ry) {
+export function ellipseContour(cx: number, cy: number, rx: number, ry: number): Contour {
   const kx = KAPPA * rx, ky = KAPPA * ry;
   return {
     closed: true,
@@ -28,23 +48,22 @@ export function ellipseContour(cx, cy, rx, ry) {
   };
 }
 
-export function translateContour(c, dx, dy) {
+export function translateContour(c: Contour, dx: number, dy: number): Contour {
   c.nodes.forEach((n) => { n.x += dx; n.y += dy; });
   return c;
 }
 
 // Build an SVG path "d" for a contour (Y-up font coords; caller flips Y).
-export function contourToPathD(contour) {
+export function contourToPathD(contour: Contour): string {
   const pts = contour.nodes;
   if (!pts.length) return "";
   // Rotate so we start at an on-curve point when possible.
-  let startIdx = pts.findIndex((p) => p.type !== "offcurve");
+  const startIdx = pts.findIndex((p) => p.type !== "offcurve");
   if (startIdx < 0) return "";
   const seq = pts.slice(startIdx).concat(pts.slice(0, startIdx));
   const parts = [`M ${seq[0].x} ${seq[0].y}`];
   let i = 1;
   const n = seq.length;
-  const take = () => seq[i++ % n];
   let guard = 0;
   while (i <= n && guard++ < 500) {
     if (!contour.closed && i >= n) break;
@@ -59,19 +78,18 @@ export function contourToPathD(contour) {
     const cx = p0.x + (2 / 3) * (a.x - p0.x), cy = p0.y + (2 / 3) * (a.y - p0.y);
     const dx = b.x + (2 / 3) * (a.x - b.x), dy = b.y + (2 / 3) * (a.y - b.y);
     parts.push(`C ${cx} ${cy} ${dx} ${dy} ${b.x} ${b.y}`); i += 2;
-    void take;
   }
   if (contour.closed) parts.push("Z");
   return parts.join(" ");
 }
 
-export function glyphToPathD(glyph, masterId) {
+export function glyphToPathD(glyph: Glyph, masterId: string): string {
   const layer = glyph.layers[masterId];
   if (!layer) return "";
   return layer.paths.map(contourToPathD).filter(Boolean).join(" ");
 }
 
-export function contourBounds(contour) {
+export function contourBounds(contour: Contour): Bounds | null {
   if (!contour.nodes.length) return null;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const p of contour.nodes) {
@@ -81,10 +99,10 @@ export function contourBounds(contour) {
   return { minX, minY, maxX, maxY };
 }
 
-export function glyphBounds(glyph, masterId) {
+export function glyphBounds(glyph: Glyph, masterId: string): Bounds | null {
   const layer = glyph.layers[masterId];
   if (!layer || !layer.paths.length) return null;
-  let out = null;
+  let out: Bounds | null = null;
   for (const c of layer.paths) {
     const b = contourBounds(c);
     if (!b) continue;
@@ -97,12 +115,17 @@ export function glyphBounds(glyph, masterId) {
   return out;
 }
 
-export function kernKey(left, right) { return `${left}|${right}`; }
-export function getKern(font, left, right) {
+export function kernKey(left: string, right: string): string { return `${left}|${right}`; }
+export function getKern(font: Font, left: string, right: string): number {
   return font.kerning[kernKey(left, right)] || 0;
 }
 
-function makeGlyph(name, unicode, width, contours, extra = {}) {
+interface GlyphExtra {
+  lsb?: number; rsb?: number; category?: string;
+  kerningGroupLeft?: string; kerningGroupRight?: string; anchors?: Anchor[];
+}
+
+function makeGlyph(name: string, unicode: number | null, width: number, contours: Contour[], extra: GlyphExtra = {}): Glyph {
   return {
     name, unicode, width,
     lsb: extra.lsb ?? 40, rsb: extra.rsb ?? 40,
@@ -115,8 +138,8 @@ function makeGlyph(name, unicode, width, contours, extra = {}) {
 }
 
 // Original geometric starter glyphs (drawn for this MVP, not copied outlines).
-export function createDefaultFont() {
-  const glyphs = [];
+export function createDefaultFont(): Font {
+  const glyphs: Glyph[] = [];
   glyphs.push(makeGlyph("space", 0x0020, 280, [], { lsb: 0, rsb: 0, category: "Separator" }));
   // A: outer triangle-ish with counter.
   glyphs.push(makeGlyph("A", 0x0041, 680, [
@@ -155,13 +178,13 @@ export function createDefaultFont() {
   };
 }
 
-export function findGlyph(font, name) { return font.glyphs.find((g) => g.name === name); }
+export function findGlyph(font: Font, name: string): Glyph | undefined { return font.glyphs.find((g) => g.name === name); }
 
-export function syncBearings(font, glyph) {
+export function syncBearings(font: Font, glyph: Glyph): void {
   const b = glyphBounds(glyph, font.currentMasterId);
   if (!b) return;
   glyph.lsb = Math.round(b.minX);
   glyph.rsb = Math.round(glyph.width - b.maxX);
 }
 
-export function cloneFont(font) { return JSON.parse(JSON.stringify(font)); }
+export function cloneFont(font: Font): Font { return JSON.parse(JSON.stringify(font)) as Font; }

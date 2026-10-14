@@ -1,6 +1,10 @@
 // UFO 3 export/import as a .zip (stored entries) so Windows users get a
 // real interchange file without a native packager. GLIF points map:
 // line/curve/smooth keep their type; offcurve points omit `type`.
+import type { Anchor, Contour, Font, FontNode, Glyph } from "./model.ts";
+
+export interface ZipFile { name: string; data: string | Uint8Array }
+export interface ParsedGlif { name: string; unicode: number | null; width: number; paths: Contour[]; anchors: Anchor[] }
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -11,7 +15,7 @@ const CRC_TABLE = (() => {
   return t;
 })();
 
-function crc32(bytes) {
+function crc32(bytes: Uint8Array): number {
   let c = 0xffffffff;
   for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
@@ -20,10 +24,9 @@ function crc32(bytes) {
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-export function zipStore(files) {
-  // files: [{name, data: string|Uint8Array}]
-  const chunks = [];
-  const central = [];
+export function zipStore(files: ZipFile[]): Uint8Array<ArrayBuffer> {
+  const chunks: Uint8Array[] = [];
+  const central: Uint8Array[] = [];
   let offset = 0;
   for (const f of files) {
     const nameBytes = enc.encode(f.name);
@@ -63,7 +66,7 @@ export function zipStore(files) {
   return out;
 }
 
-export async function unzipToMap(arrayBuffer) {
+export async function unzipToMap(arrayBuffer: ArrayBuffer): Promise<Map<string, Uint8Array>> {
   const bytes = new Uint8Array(arrayBuffer);
   const view = new DataView(arrayBuffer);
   // Find End of Central Directory.
@@ -74,7 +77,7 @@ export async function unzipToMap(arrayBuffer) {
   if (eocd < 0) throw new Error("Not a ZIP file.");
   const count = view.getUint16(eocd + 10, true);
   let p = view.getUint32(eocd + 16, true);
-  const map = new Map();
+  const map = new Map<string, Uint8Array>();
   for (let n = 0; n < count; n++) {
     if (view.getUint32(p, true) !== 0x02014b50) break;
     const method = view.getUint16(p + 10, true);
@@ -100,18 +103,18 @@ export async function unzipToMap(arrayBuffer) {
   return map;
 }
 
-function esc(s) {
+function esc(s: string): string {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 }
 
-export function glyphNameToFile(name) {
+export function glyphNameToFile(name: string): string {
   const safe = name.replace(/[\\/:*?"<>|]/g, "_");
   return `${safe}.glif`;
 }
 
-export function glyphToGlif(glyph, masterId) {
+export function glyphToGlif(glyph: Glyph, masterId: string): string {
   const layer = glyph.layers[masterId] || { paths: [] };
-  const lines = [];
+  const lines: string[] = [];
   lines.push('<?xml version="1.0" encoding="UTF-8"?>');
   lines.push(`<glyph name="${esc(glyph.name)}" format="2">`);
   lines.push(`  <advance width="${glyph.width}"/>`);
@@ -132,37 +135,37 @@ export function glyphToGlif(glyph, masterId) {
   return lines.join("\n");
 }
 
-export function parseGlif(xmlText, fallbackName) {
+export function parseGlif(xmlText: string, fallbackName?: string): ParsedGlif {
   const doc = new DOMParser().parseFromString(xmlText, "text/xml");
   const gEl = doc.querySelector("glyph");
   if (!gEl) throw new Error("GLIF missing <glyph>.");
   const name = gEl.getAttribute("name") || fallbackName || "unnamed";
   const adv = doc.querySelector("advance");
-  const width = adv ? +adv.getAttribute("width") || 500 : 500;
+  const width = adv ? Number(adv.getAttribute("width")) || 500 : 500;
   const uniEl = doc.querySelector("unicode");
-  const unicode = uniEl ? parseInt(uniEl.getAttribute("hex"), 16) : null;
-  const paths = [];
+  const unicode = uniEl ? parseInt(uniEl.getAttribute("hex") ?? "", 16) : null;
+  const paths: Contour[] = [];
   doc.querySelectorAll("contour").forEach((cEl) => {
-    const nodes = [];
+    const nodes: FontNode[] = [];
     let closed = true;
     cEl.querySelectorAll("point").forEach((pEl, idx) => {
       const t = pEl.getAttribute("type");
       if (idx === 0 && t === "move") closed = false;
       nodes.push({
-        x: +pEl.getAttribute("x") || 0, y: +pEl.getAttribute("y") || 0,
+        x: Number(pEl.getAttribute("x")) || 0, y: Number(pEl.getAttribute("y")) || 0,
         type: t === "curve" || t === "smooth" ? t : t === "move" || t === "line" ? "line" : "offcurve",
       });
     });
     if (nodes.length) paths.push({ closed, nodes });
   });
-  const anchors = [];
+  const anchors: Anchor[] = [];
   doc.querySelectorAll("anchor").forEach((aEl) => {
-    anchors.push({ name: aEl.getAttribute("name") || "top", x: +aEl.getAttribute("x") || 0, y: +aEl.getAttribute("y") || 0 });
+    anchors.push({ name: aEl.getAttribute("name") || "top", x: Number(aEl.getAttribute("x")) || 0, y: Number(aEl.getAttribute("y")) || 0 });
   });
   return { name, unicode, width, paths, anchors };
 }
 
-function plistDict(entries) {
+function plistDict(entries: Array<[string, string | number]>): string {
   const body = entries.map(([k, v]) => {
     const val = typeof v === "number" ? `<integer>${v}</integer>` : `<string>${esc(v)}</string>`;
     return `    <key>${esc(k)}</key>\n    ${val}`;
@@ -170,9 +173,9 @@ function plistDict(entries) {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n  <dict>\n${body}\n  </dict>\n</plist>\n`;
 }
 
-export function fontToUfoZip(font) {
+export function fontToUfoZip(font: Font): Uint8Array<ArrayBuffer> {
   const masterId = font.currentMasterId;
-  const files = [];
+  const files: ZipFile[] = [];
   files.push({ name: "metainfo.plist", data: plistDict([["creator", "Glyphs for Windows MVP"], ["formatVersion", 3]]) });
   files.push({
     name: "fontinfo.plist",
@@ -199,14 +202,14 @@ export function fontToUfoZip(font) {
   return zipStore(files);
 }
 
-export function ufoMapToFont(map, fileName) {
-  const glyphs = [];
+export function ufoMapToFont(map: Map<string, Uint8Array>, fileName?: string): Font {
+  const glyphs: Glyph[] = [];
   let familyName = "Imported UFO";
   const infoBytes = map.get("fontinfo.plist");
   let unitsPerEm = 1000, ascender = 800, descender = -200, capHeight = 700, xHeight = 500;
   if (infoBytes) {
     const txt = dec.decode(infoBytes);
-    const grab = (key) => {
+    const grab = (key: string): string | null => {
       const m = txt.match(new RegExp(`<key>${key}<\\/key>\\s*<(?:string|integer)>([^<]+)`));
       return m ? m[1] : null;
     };
@@ -217,7 +220,7 @@ export function ufoMapToFont(map, fileName) {
   }
   for (const [path, bytes] of map.entries()) {
     if (!path.startsWith("glyphs/") || !path.endsWith(".glif")) continue;
-    const base = path.split("/").pop().replace(/\.glif$/i, "");
+    const base = (path.split("/").pop() ?? path).replace(/\.glif$/i, "");
     try {
       const parsed = parseGlif(dec.decode(bytes), base);
       glyphs.push({
@@ -228,7 +231,7 @@ export function ufoMapToFont(map, fileName) {
     } catch { /* skip unreadable glyph, keep importing the rest */ }
   }
   glyphs.sort((a, b) => (a.unicode ?? 0x10000) - (b.unicode ?? 0x10000) || a.name.localeCompare(b.name));
-  const kerning = {};
+  const kerning: Record<string, number> = {};
   const kernBytes = map.get("kerning.plist");
   if (kernBytes) {
     const txt = dec.decode(kernBytes);
