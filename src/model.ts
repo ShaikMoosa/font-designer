@@ -306,3 +306,77 @@ export function interpolateGlyphAt(font: Font, glyphName: string, t: number): Gl
 export function mastersCompatible(font: Font, glyphName: string): boolean {
   return interpolateGlyphAt(font, glyphName, 0.5) !== null;
 }
+
+export interface XY { x: number; y: number }
+
+// Ramer–Douglas–Peucker polyline simplification. Endpoints are always kept;
+// interior points survive only when farther than epsilon from the segment.
+export function simplifyPoints(points: XY[], epsilon: number): XY[] {
+  if (points.length <= 2) return points.map((p) => ({ ...p }));
+  const keep = new Array<boolean>(points.length).fill(false);
+  keep[0] = keep[points.length - 1] = true;
+  const stack: Array<[number, number]> = [[0, points.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop() as [number, number];
+    const pa = points[a], pb = points[b];
+    const dx = pb.x - pa.x, dy = pb.y - pa.y;
+    const len2 = dx * dx + dy * dy;
+    let worst = -1, worstDist = epsilon;
+    for (let i = a + 1; i < b; i++) {
+      const p = points[i];
+      const t = len2 ? ((p.x - pa.x) * dx + (p.y - pa.y) * dy) / len2 : 0;
+      const tc = Math.max(0, Math.min(1, t));
+      const d = Math.hypot(p.x - (pa.x + dx * tc), p.y - (pa.y + dy * tc));
+      if (d > worstDist) { worstDist = d; worst = i; }
+    }
+    if (worst >= 0) { keep[worst] = true; stack.push([a, worst], [worst, b]); }
+  }
+  return points.filter((_, i) => keep[i]).map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }));
+}
+
+// Freehand stroke → editable open contour of line nodes (Glyphs Pencil
+// behaviour subset). Returns null when the stroke has too few points.
+export function pencilContour(points: XY[], epsilon = 6): Contour | null {
+  const pts = simplifyPoints(points, epsilon);
+  if (pts.length < 2) return null;
+  return { closed: false, nodes: pts.map((p) => lineNode(p.x, p.y)) };
+}
+
+export interface Measurement { dx: number; dy: number; distance: number; angleDeg: number }
+
+export function measureBetween(a: XY, b: XY): Measurement {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  return {
+    dx, dy,
+    distance: Math.round(Math.hypot(dx, dy) * 10) / 10,
+    angleDeg: Math.round((Math.atan2(dy, dx) * 180) / Math.PI * 100) / 100,
+  };
+}
+
+export type AlignMode = "left" | "hcenter" | "right" | "bottom" | "vcenter" | "top" | "distX" | "distY";
+
+// Returns new coordinates for the given points; inputs are not mutated.
+export function alignPoints(points: XY[], mode: AlignMode): XY[] {
+  const out = points.map((p) => ({ ...p }));
+  if (!out.length) return out;
+  const xs = out.map((p) => p.x), ys = out.map((p) => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  switch (mode) {
+    case "left": for (const p of out) p.x = minX; break;
+    case "right": for (const p of out) p.x = maxX; break;
+    case "hcenter": { const c = Math.round((minX + maxX) / 2); for (const p of out) p.x = c; break; }
+    case "bottom": for (const p of out) p.y = minY; break;
+    case "top": for (const p of out) p.y = maxY; break;
+    case "vcenter": { const c = Math.round((minY + maxY) / 2); for (const p of out) p.y = c; break; }
+    case "distX": case "distY": {
+      if (out.length < 3) break;
+      const key = mode === "distX" ? "x" : "y";
+      const order = out.map((_, i) => i).sort((i, j) => out[i][key] - out[j][key]);
+      const lo = out[order[0]][key], hi = out[order[order.length - 1]][key];
+      order.forEach((idx, rank) => { out[idx][key] = Math.round(lo + ((hi - lo) * rank) / (order.length - 1)); });
+      break;
+    }
+  }
+  return out;
+}

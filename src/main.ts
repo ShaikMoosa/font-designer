@@ -5,7 +5,7 @@ import {
   cloneFont, kernKey, rectContour, ellipseContour,
   compositeRecipe, interpolateGlyphAt, mastersCompatible, contoursToPathD,
 } from "./model.ts";
-import type { Font, Glyph, GlyphLayer } from "./model.ts";
+import type { AlignMode, Font, Glyph, GlyphLayer } from "./model.ts";
 import { fontToGlyphsJson, glyphsJsonToFont, downloadText, downloadBytes } from "./glyphs-io.ts";
 import { fontToUfoZip, fontToDesignspaceBundle, unzipToMap, ufoMapToFont } from "./ufo.ts";
 import { fontToOtfArrayBuffer } from "./otf.ts";
@@ -17,7 +17,7 @@ import { fixContourDirections, unionContours } from "./pathsurgery.ts";
 
 const COMPILE_SERVICE = "http://127.0.0.1:8765";
 import { createEditor } from "./editor.ts";
-import type { Tool } from "./editor.ts";
+import type { Editor, EditorHooks, MeasureInfo, Tool } from "./editor.ts";
 
 function $<T extends Element>(sel: string): T { return document.querySelector(sel) as T; }
 function qs<T extends HTMLElement>(root: ParentNode, sel: string): T { return root.querySelector(sel) as T; }
@@ -25,6 +25,7 @@ function qs<T extends HTMLElement>(root: ParentNode, sel: string): T { return ro
 interface AppState {
   font: Font; currentGlyphName: string; openTabs: string[];
   undoStack: Font[]; redoStack: Font[]; fontViewMode: "grid" | "list";
+  splitView: boolean; paneBMasterId: string;
 }
 
 const state: AppState = {
@@ -33,12 +34,19 @@ const state: AppState = {
   openTabs: ["A"],
   undoStack: [], redoStack: [],
   fontViewMode: "grid",
+  splitView: false, paneBMasterId: "",
 };
 
 function currentGlyph(): Glyph { return findGlyph(state.font, state.currentGlyphName) || state.font.glyphs[0]; }
 function setStatus(msg: string): void { $("#statusMsg").textContent = msg; }
 
-const editor = createEditor($<SVGSVGElement>("#editorSvg"), {
+function showMeasure(info: MeasureInfo | null): void {
+  $("#measureReadout").textContent = info
+    ? `Measure: ${info.distance} units · dx ${info.dx} · dy ${info.dy} · ${info.angleDeg}°`
+    : "";
+}
+
+const editorHooks: EditorHooks = {
   onBeginChange() { pushUndo(); },
   onMutate() { renderDynamic(false); },
   onEndChange() {
@@ -52,7 +60,24 @@ const editor = createEditor($<SVGSVGElement>("#editorSvg"), {
   onStatus(msg) { setStatus(msg); },
   onTextFocus() { const input = $<HTMLInputElement>("#previewText"); input.focus(); input.select(); },
   onRender() { /* status line updated in renderDynamic */ },
+  onMeasure(info) { showMeasure(info); },
+};
+
+const editor = createEditor($<SVGSVGElement>("#editorSvg"), {
+  ...editorHooks,
+  onActivate() { activeEd = editor; },
 });
+const editorB = createEditor($<SVGSVGElement>("#editorSvgB"), {
+  ...editorHooks,
+  onActivate() { activeEd = editorB; },
+});
+let activeEd: Editor = editor;
+
+function refreshPaneB(refit = false): void {
+  if (!state.splitView) return;
+  if (refit) editorB.setGlyph(state.font, currentGlyph());
+  else editorB.refresh(state.font, currentGlyph());
+}
 
 function pushUndo() {
   state.undoStack.push(cloneFont(state.font));
@@ -96,7 +121,7 @@ function openGlyph(name: string, refit = true): void {
   if (!g) return;
   state.currentGlyphName = name;
   if (!state.openTabs.includes(name)) state.openTabs.push(name);
-  if (refit) editor.setGlyph(state.font, g); else editor.refresh(state.font, g);
+  if (refit) { editor.setGlyph(state.font, g); refreshPaneB(true); } else editor.refresh(state.font, g);
   renderAll();
 }
 
@@ -176,6 +201,21 @@ function renderHeader() {
     if (m.id === state.font.currentMasterId) opt.selected = true;
     sel.appendChild(opt);
   }
+  if (!state.font.masters.some((m) => m.id === state.paneBMasterId)) {
+    state.paneBMasterId = (state.font.masters.find((m) => m.id !== state.font.currentMasterId) || state.font.masters[0])?.id || "";
+  }
+  const selB = $<HTMLSelectElement>("#paneBMaster");
+  selB.innerHTML = "";
+  for (const m of state.font.masters) {
+    const opt = document.createElement("option");
+    opt.value = m.id; opt.textContent = m.name;
+    if (m.id === state.paneBMasterId) opt.selected = true;
+    selB.appendChild(opt);
+  }
+  $<HTMLButtonElement>("#splitBtn").classList.toggle("is-on", state.splitView);
+  $<HTMLElement>("#paneBLabel").hidden = !state.splitView;
+  const svgB = $<SVGSVGElement>("#editorSvgB");
+  if (state.splitView) svgB.removeAttribute("hidden"); else svgB.setAttribute("hidden", "");
   const g = currentGlyph();
   $("#statusRight").textContent = g
     ? `${state.font.familyName} · ${g.name} · width ${g.width} · LSB ${g.lsb} RSB ${g.rsb} · ${state.font.glyphs.length} glyphs`
@@ -187,6 +227,7 @@ function renderDynamic(refitSide = true) {
   renderTabs();
   renderFontView();
   renderPreview();
+  refreshPaneB(false);
   if (refitSide) renderSide();
 }
 
@@ -196,6 +237,7 @@ function renderAll() {
   renderFontView();
   renderSide();
   renderPreview();
+  refreshPaneB(false);
 }
 
 function escHtml(s: string): string {
@@ -513,20 +555,7 @@ function renderPalette(g: Glyph): void {
     editor.refresh(state.font, g); renderAll();
     setStatus(`Remove overlaps: ${before} → ${layer.paths.length} contour(s). Curves were flattened — Ctrl+Z restores them.`);
   });
-  qs<HTMLButtonElement>(page, "#palCopyLayer").addEventListener("click", () => {
-    const name = prompt("New master name (e.g. Bold):", "Bold");
-    if (!name) return;
-    pushUndo();
-    const id = `master${Date.now().toString(36)}`;
-    state.font.masters.push({ id, name, weightValue: 700 });
-    for (const glyph of state.font.glyphs) {
-      const src = glyph.layers[state.font.currentMasterId] || { paths: [] };
-      glyph.layers[id] = JSON.parse(JSON.stringify(src));
-    }
-    state.font.instances.push({ name, masterId: id, active: true });
-    editor.refresh(state.font, g); renderAll();
-    setStatus(`Master ${name} created from the current layers. Switch masters at the top to edit it.`);
-  });
+  qs<HTMLButtonElement>(page, "#palCopyLayer").addEventListener("click", () => { addMasterCopy(); });
 }
 
 function renderKerning(): void {
@@ -652,8 +681,47 @@ function renderSide(): void {
 
 function setTool(tool: Tool): void {
   editor.setTool(tool);
+  editorB.setTool(tool);
   document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((b) => b.classList.toggle("is-on", b.dataset.tool === tool));
-  setStatus(tool === "pen" ? "Pen: click to place nodes, drag to pull handles, click the first node to close." : tool === "hand" ? "Hand: drag to pan, wheel to zoom." : tool === "text" ? "Text: type in Preview below; red boxes mean the glyph is missing." : "Select: drag white nodes and blue handles; arrows nudge.");
+  setStatus(tool === "pen" ? "Pen: click to place nodes, drag to pull handles, click the first node to close."
+    : tool === "pencil" ? "Pencil: drag a freehand stroke — it becomes an editable open contour on release."
+    : tool === "measure" ? "Measure: click two points (snaps to nodes); the readout shows distance and angle. Nothing is modified."
+    : tool === "hand" ? "Hand: drag to pan, wheel to zoom."
+    : tool === "text" ? "Text: type in Preview below; red boxes mean the glyph is missing."
+    : "Select: drag nodes/handles; Shift-click selects multiple nodes for alignment; arrows nudge the selection.");
+}
+
+function addMasterCopy(): void {
+  const name = prompt("New master name (e.g. Bold):", "Bold");
+  if (!name) return;
+  pushUndo();
+  const id = `master${Date.now().toString(36)}`;
+  state.font.masters.push({ id, name, weightValue: 700 });
+  for (const glyph of state.font.glyphs) {
+    const src = glyph.layers[state.font.currentMasterId] || { paths: [] };
+    glyph.layers[id] = JSON.parse(JSON.stringify(src)) as GlyphLayer;
+  }
+  state.font.instances.push({ name, masterId: id, active: true });
+  state.paneBMasterId = id;
+  editorB.setMasterOverride(id);
+  renderAll();
+  refreshPaneB(true);
+  setStatus(`Master ${name} created from the current layers. ${state.splitView ? "Pane B shows it — edit both masters side by side." : "Use Masters side-by-side to edit it next to the current master."}`);
+}
+
+function toggleSplitView(): void {
+  state.splitView = !state.splitView;
+  renderHeader();
+  if (state.splitView) {
+    editorB.setMasterOverride(state.paneBMasterId || null);
+    editorB.setGlyph(state.font, currentGlyph());
+    setStatus(state.font.masters.length < 2
+      ? "Side-by-side on, but this font has one master — use + Master (copy) to create the second one."
+      : "Side-by-side masters: click a pane to make it active, then draw/edit. Each pane keeps its own master.");
+  } else {
+    activeEd = editor;
+    setStatus("Side-by-side off.");
+  }
 }
 
 function addGlyphFlow(): void {
@@ -825,18 +893,18 @@ function dispatch(cmd: string): void {
     case "export-font": document.querySelector<HTMLButtonElement>('[data-side="export"]')?.click(); break;
     case "undo": undo(); break;
     case "redo": redo(); break;
-    case "delete-sel": editor.deleteSelected(); break;
-    case "close-path": editor.closeActivePath(); break;
-    case "convert": editor.convertSelected(); break;
-    case "zoom-in": editor.zoomBy(1.25); break;
-    case "zoom-out": editor.zoomBy(1 / 1.25); break;
-    case "zoom-fit": editor.zoomFit(); break;
-    case "toggle-guides": setStatus(`Guides ${editor.toggleGuides() ? "on" : "off"}.`); break;
-    case "toggle-nodes": setStatus(`Nodes ${editor.toggleNodes() ? "shown" : "hidden"}.`); break;
+    case "delete-sel": activeEd.deleteSelected(); break;
+    case "close-path": activeEd.closeActivePath(); break;
+    case "convert": activeEd.convertSelected(); break;
+    case "zoom-in": activeEd.zoomBy(1.25); break;
+    case "zoom-out": activeEd.zoomBy(1 / 1.25); break;
+    case "zoom-fit": activeEd.zoomFit(); break;
+    case "toggle-guides": setStatus(`Guides ${activeEd.toggleGuides() ? "on" : "off"}.`); break;
+    case "toggle-nodes": setStatus(`Nodes ${activeEd.toggleNodes() ? "shown" : "hidden"}.`); break;
     case "add-glyph": addGlyphFlow(); break;
     case "create-composite": createCompositeFlow(); break;
-    case "add-rect": if (g) editor.addContour(rectContour(80, 0, 360, 500)); break;
-    case "add-ellipse": if (g) editor.addContour(ellipseContour(300, 250, 220, 250)); break;
+    case "add-rect": if (g) activeEd.addContour(rectContour(80, 0, 360, 500)); break;
+    case "add-ellipse": if (g) activeEd.addContour(ellipseContour(300, 250, 220, 250)); break;
     default: break;
   }
 }
@@ -866,6 +934,17 @@ $<HTMLInputElement>("#fileInput").addEventListener("change", (ev) => {
 });
 $<HTMLInputElement>("#previewText").addEventListener("input", renderPreview);
 $<HTMLInputElement>("#previewSize").addEventListener("input", renderPreview);
+$("#splitBtn").addEventListener("click", toggleSplitView);
+$("#addMasterBtn").addEventListener("click", addMasterCopy);
+$<HTMLSelectElement>("#paneBMaster").addEventListener("change", (ev) => {
+  state.paneBMasterId = (ev.target as HTMLSelectElement).value;
+  editorB.setMasterOverride(state.paneBMasterId || null);
+  editorB.refresh(state.font, currentGlyph());
+  setStatus(`Pane B master: ${state.font.masters.find((m) => m.id === state.paneBMasterId)?.name || ""}.`);
+});
+document.querySelectorAll<HTMLButtonElement>("[data-align]").forEach((b) => b.addEventListener("click", () => {
+  activeEd.alignSelection((b.dataset.align || "left") as AlignMode);
+}));
 $("#rectBtn").addEventListener("click", () => dispatch("add-rect"));
 $("#ellipseBtn").addEventListener("click", () => dispatch("add-ellipse"));
 $("#closePathBtn").addEventListener("click", () => dispatch("close-path"));
@@ -885,18 +964,20 @@ document.addEventListener("keydown", (ev) => {
   if (mod && ev.key.toLowerCase() === "z" && !ev.shiftKey) { ev.preventDefault(); undo(); return; }
   if ((mod && ev.key.toLowerCase() === "y") || (mod && ev.shiftKey && ev.key.toLowerCase() === "z")) { ev.preventDefault(); redo(); return; }
   if (typing) return;
-  if (mod && (ev.key === "+" || ev.key === "=")) { ev.preventDefault(); editor.zoomBy(1.25); return; }
-  if (mod && ev.key === "-") { ev.preventDefault(); editor.zoomBy(1 / 1.25); return; }
-  if (mod && ev.key === "0") { ev.preventDefault(); editor.zoomFit(); return; }
-  if (ev.key === "Delete" || ev.key === "Backspace") { editor.deleteSelected(); return; }
+  if (mod && (ev.key === "+" || ev.key === "=")) { ev.preventDefault(); activeEd.zoomBy(1.25); return; }
+  if (mod && ev.key === "-") { ev.preventDefault(); activeEd.zoomBy(1 / 1.25); return; }
+  if (mod && ev.key === "0") { ev.preventDefault(); activeEd.zoomFit(); return; }
+  if (ev.key === "Delete" || ev.key === "Backspace") { activeEd.deleteSelected(); return; }
   const step = ev.shiftKey ? 10 : 1;
-  if (ev.key === "ArrowLeft") { ev.preventDefault(); editor.nudgeSelected(-step, 0); }
-  if (ev.key === "ArrowRight") { ev.preventDefault(); editor.nudgeSelected(step, 0); }
-  if (ev.key === "ArrowUp") { ev.preventDefault(); editor.nudgeSelected(0, step); }
-  if (ev.key === "ArrowDown") { ev.preventDefault(); editor.nudgeSelected(0, -step); }
+  if (ev.key === "ArrowLeft") { ev.preventDefault(); activeEd.nudgeSelected(-step, 0); }
+  if (ev.key === "ArrowRight") { ev.preventDefault(); activeEd.nudgeSelected(step, 0); }
+  if (ev.key === "ArrowUp") { ev.preventDefault(); activeEd.nudgeSelected(0, step); }
+  if (ev.key === "ArrowDown") { ev.preventDefault(); activeEd.nudgeSelected(0, -step); }
   const k = ev.key.toLowerCase();
   if (k === "v") setTool("select");
   if (k === "p") setTool("pen");
+  if (k === "b") setTool("pencil");
+  if (k === "m") setTool("measure");
   if (k === "h") setTool("hand");
   if (k === "t") { setTool("text"); $<HTMLInputElement>("#previewText").focus(); }
 });

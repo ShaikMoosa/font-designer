@@ -43,6 +43,15 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   validation that blocks on errors; optional local compile service
   (`tools/fontc`, `uv sync && uv run python server.py`) for WOFF2 and
   variable fonts from the designspace bundle.
+- **Phase 4 (Editing depth):** Masters side-by-side — a second editor
+  pane with its own master (pane bar: *Masters side-by-side*, *Pane B
+  master*, *+ Master (copy)*); click a pane to make it the active one
+  for toolbar/keyboard commands. Pencil tool (B) turns a freehand
+  stroke into an editable open contour (Ramer–Douglas–Peucker,
+  tolerance 6). Measure tool (M) snaps to nodes and reports distance,
+  dx/dy and angle without modifying the font. Shift-click builds a
+  multi-node selection that drags/nudges/deletes together and feeds
+  the alignment/distribute buttons in the toolbar.
 
 ## Deferred (per Handbook)
 

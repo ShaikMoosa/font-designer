@@ -77,8 +77,10 @@
         </aside>
         <main id="editview" aria-label="Edit View">
           <div id="toolbar" role="toolbar" aria-label="Edit tools">
-            <button data-tool="select" class="tool is-on" type="button" title="Select (V)">Select</button>
+            <button data-tool="select" class="tool is-on" type="button" title="Select (V) — Shift-click adds nodes">Select</button>
             <button data-tool="pen" class="tool" type="button" title="Pen — click to place nodes, drag for curves (P)">Pen</button>
+            <button data-tool="pencil" class="tool" type="button" title="Pencil — drag a freehand stroke (B)">Pencil</button>
+            <button data-tool="measure" class="tool" type="button" title="Measure — click two points, snaps to nodes (M)">Measure</button>
             <button data-tool="hand" class="tool" type="button" title="Hand — drag to pan (H)">Hand</button>
             <button data-tool="text" class="tool" type="button" title="Text — edit preview string (T)">Text</button>
             <span class="tool-sep"></span>
@@ -88,12 +90,34 @@
             <button id="convertBtn" type="button">Convert</button>
             <button id="deleteBtn" type="button">Delete</button>
             <span class="tool-sep"></span>
+            <span class="align-group" role="group" aria-label="Align selected nodes">
+              <button data-align="left" type="button" title="Align left edges">⇤</button>
+              <button data-align="hcenter" type="button" title="Align horizontal centers">↔</button>
+              <button data-align="right" type="button" title="Align right edges">⇥</button>
+              <button data-align="bottom" type="button" title="Align bottoms">⤓</button>
+              <button data-align="vcenter" type="button" title="Align vertical centers">↕</button>
+              <button data-align="top" type="button" title="Align tops">⤒</button>
+              <button data-align="distX" type="button" title="Distribute horizontally">⇹ X</button>
+              <button data-align="distY" type="button" title="Distribute vertically">⇹ Y</button>
+            </span>
+            <span class="tool-sep"></span>
             <button id="undoBtn" type="button">Undo</button>
             <button id="redoBtn" type="button">Redo</button>
           </div>
           <div id="tabs" class="tabs" role="tablist" aria-label="Open glyphs"></div>
+          <div id="paneBar">
+            <button id="splitBtn" type="button" title="Show two masters of this glyph side by side">Masters side-by-side</button>
+            <label id="paneBLabel" hidden>Pane B master
+              <select id="paneBMaster" aria-label="Second pane master"></select>
+            </label>
+            <button id="addMasterBtn" type="button" title="Create a new master by copying the current layers">+ Master (copy)</button>
+            <span id="measureReadout" class="measure-readout" aria-live="polite"></span>
+          </div>
           <div id="canvasWrap">
-            <svg id="editorSvg" role="application" aria-label="Glyph outline editor" tabindex="0"></svg>
+            <div id="panes">
+              <svg id="editorSvg" role="application" aria-label="Glyph outline editor" tabindex="0"></svg>
+              <svg id="editorSvgB" role="application" aria-label="Glyph outline editor, second master" tabindex="0" hidden></svg>
+            </div>
             <div id="coordReadout" class="coord">0, 0</div>
           </div>
           <div id="previewBar">

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   createDefaultFont, contourToPathD, rectContour, glyphBounds,
   resolveGlyphContours, interpolateGlyphAt, resolveKern, findGlyph,
+  simplifyPoints, pencilContour, measureBetween, alignPoints,
 } from "../src/model.ts";
 import { fontToGlyphsJson, glyphsJsonToFont, parseOpenStep } from "../src/glyphs-io.ts";
 import { fontToUfoZip, unzipToMap, glyphToGlif } from "../src/ufo.ts";
@@ -209,6 +210,46 @@ test("designspace bundle carries one UFO per master", async () => {
   const keys = [...map.keys()];
   assert.ok(keys.some((k) => k.startsWith("masters/m-regular/glyphs/")));
   assert.ok(keys.some((k) => k.startsWith("masters/m-bold/glyphs/")));
+});
+
+test("pencil points simplify and become an editable contour", () => {
+  const raw = [
+    { x: 0, y: 0 }, { x: 10, y: 1 }, { x: 20, y: -1 }, { x: 30, y: 0 },
+    { x: 40, y: 40 }, { x: 50, y: 80 }, { x: 52, y: 120 },
+  ];
+  const simplified = simplifyPoints(raw, 3);
+  assert.ok(simplified.length < raw.length);
+  assert.deepEqual(simplified[0], { x: 0, y: 0 });
+  assert.deepEqual(simplified[simplified.length - 1], { x: 52, y: 120 });
+  const contour = pencilContour(raw, 3);
+  assert.ok(contour);
+  assert.equal(contour.closed, false);
+  assert.ok(contour.nodes.length >= 3);
+  assert.ok(contour.nodes.every((n) => n.type === "line"));
+  assert.equal(pencilContour([{ x: 5, y: 5 }]), null);
+});
+
+test("measure reports distance and angle", () => {
+  const m = measureBetween({ x: 0, y: 0 }, { x: 30, y: 40 });
+  assert.equal(m.distance, 50);
+  assert.equal(m.dx, 30);
+  assert.equal(m.dy, 40);
+  assert.ok(Math.abs(m.angleDeg - 53.13) < 0.01);
+  const flat = measureBetween({ x: 10, y: 10 }, { x: 110, y: 10 });
+  assert.equal(flat.angleDeg, 0);
+});
+
+test("align moves points to shared edges and distributes evenly", () => {
+  const pts = [{ x: 10, y: 0 }, { x: 50, y: 20 }, { x: 30, y: 40 }];
+  assert.deepEqual(alignPoints(pts, "left").map((p) => p.x), [10, 10, 10]);
+  assert.deepEqual(alignPoints(pts, "right").map((p) => p.x), [50, 50, 50]);
+  assert.deepEqual(alignPoints(pts, "top").map((p) => p.y), [40, 40, 40]);
+  assert.deepEqual(alignPoints(pts, "bottom").map((p) => p.y), [0, 0, 0]);
+  assert.deepEqual(alignPoints(pts, "hcenter").map((p) => p.x), [30, 30, 30]);
+  const spread = alignPoints([{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 100, y: 0 }], "distX");
+  assert.deepEqual(spread.map((p) => p.x), [0, 50, 100]);
+  // Input points are not mutated.
+  assert.equal(pts[1].x, 50);
 });
 
 test("path surgery flattens, unions overlaps, fixes direction", () => {

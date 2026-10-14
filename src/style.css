@@ -91,9 +91,24 @@ kbd { font-family: var(--font-mono); font-size: 11px; color: var(--muted); float
   border-bottom-left-radius: 0; border-bottom-right-radius: 0; white-space: nowrap;
 }
 .tab.is-on { background: #20262f; border-bottom-color: #20262f; }
+#paneBar { display: flex; align-items: center; gap: 8px; padding: 6px 10px 0; flex-wrap: wrap; }
+#paneBar label { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+#paneBar label[hidden] { display: none; }
+.measure-readout { font-family: var(--font-mono); font-size: 12px; color: var(--ok); }
 #canvasWrap { position: relative; flex: 1; min-height: 240px; margin: 0 10px; border: 1px solid var(--line); border-top: 0; background: #20262f; }
-#editorSvg { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
-#editorSvg.tool-hand { cursor: grab; }
+#panes { display: flex; width: 100%; height: 100%; }
+#editorSvg, #editorSvgB { flex: 1 1 0; min-width: 0; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+#editorSvgB { border-left: 2px solid var(--accent); }
+#editorSvgB[hidden] { display: none; }
+#editorSvg.tool-hand, #editorSvgB.tool-hand { cursor: grab; }
+#editorSvg.tool-measure, #editorSvgB.tool-measure { cursor: cell; }
+#editorSvg.tool-pencil, #editorSvgB.tool-pencil { cursor: crosshair; }
+.align-group { display: inline-flex; gap: 2px; }
+.align-group button { padding: 4px 7px; font-family: var(--font-mono); }
+.pencil-trail { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 4 3; pointer-events: none; }
+.measure-line { stroke: var(--ok); stroke-width: 1.4; pointer-events: none; }
+.measure-dot { fill: var(--ok); stroke: #10140f; stroke-width: 1; pointer-events: none; }
+.measure-label { fill: var(--ok); font-size: 12px; font-family: var(--font-mono); pointer-events: none; }
 .coord {
   position: absolute; right: 8px; bottom: 8px; background: rgba(10,12,15,.8);
   border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; font-family: var(--font-mono); font-size: 11px;
