@@ -8,6 +8,10 @@ import { fontToGlyphsJson, glyphsJsonToFont, parseOpenStep } from "../src/glyphs
 import { fontToUfoZip, unzipToMap, glyphToGlif } from "../src/ufo.ts";
 import { parseFeatureCode, shapeText } from "../src/shaping.ts";
 import { flattenContour, unionContours, fixContourDirections } from "../src/pathsurgery.ts";
+import { fontToTtfBytes, listSfntTables, sfntChecksum } from "../src/ttf.ts";
+import { fontToWoffBytes, parseSfntTables } from "../src/woff.ts";
+import { validateFont } from "../src/validate.ts";
+import { fontToDesignspaceBundle } from "../src/ufo.ts";
 
 test("default font has editable starter glyphs", () => {
   const font = createDefaultFont();
@@ -151,6 +155,60 @@ test("feature subset shapes ligatures and feature kerning", () => {
   assert.equal(shaped[0].advance, 300);
   const av = shapeText(font, "AV", parsed);
   assert.equal(av[0].advance, 680 - 111);
+});
+
+test("TTF export is a checksummed glyf font", () => {
+  const font = createDefaultFont();
+  const ttf = fontToTtfBytes(font);
+  const view = new DataView(ttf.buffer, ttf.byteOffset, ttf.byteLength);
+  assert.equal(view.getUint32(0, false), 0x00010000);
+  const tables = listSfntTables(ttf);
+  for (const tag of ["head", "maxp", "hhea", "hmtx", "glyf", "loca", "cmap", "name", "OS/2", "post"]) {
+    assert.ok(tables.includes(tag), `missing table ${tag}`);
+  }
+  assert.equal(sfntChecksum(ttf), 0xb1b0afba);
+  const parsed = parseSfntTables(ttf);
+  const glyf = parsed.find((t) => t.tag === "glyf");
+  assert.ok(glyf && glyf.data.length > 200);
+  const maxp = parsed.find((t) => t.tag === "maxp");
+  assert.ok(maxp);
+  assert.equal(new DataView(maxp.data.buffer, maxp.data.byteOffset).getUint16(4, false), font.glyphs.length + 1);
+});
+
+test("WOFF wraps the TTF with matching lengths", async () => {
+  const font = createDefaultFont();
+  const ttf = fontToTtfBytes(font);
+  const woff = await fontToWoffBytes(ttf);
+  const view = new DataView(woff.buffer, woff.byteOffset, woff.byteLength);
+  assert.equal(view.getUint32(0, false), 0x774f4646); // wOFF
+  assert.equal(view.getUint32(16, false), ttf.length);
+  assert.equal(view.getUint32(4, false), 0x00010000); // flavor = TrueType
+});
+
+test("validation blocks duplicates and missing components only", () => {
+  const good = validateFont(createDefaultFont());
+  assert.equal(good.ok, true);
+  assert.equal(good.errors.length, 0);
+  const bad = createDefaultFont();
+  const a = findGlyph(bad, "A");
+  const v = findGlyph(bad, "V");
+  assert.ok(a && v);
+  v.unicode = a.unicode;
+  a.components = [{ glyph: "missingbase", x: 0, y: 0, scaleX: 1, scaleY: 1 }];
+  const report = validateFont(bad);
+  assert.equal(report.ok, false);
+  assert.ok(report.errors.some((e) => e.message.includes("Unicode")));
+  assert.ok(report.errors.some((e) => e.message.includes("missingbase")));
+});
+
+test("designspace bundle carries one UFO per master", async () => {
+  const font = glyphsJsonToFont(OPENSTEP_FIXTURE, "Fixture.glyphs");
+  const bundle = fontToDesignspaceBundle(font);
+  const map = await unzipToMap(bundle.buffer.slice(bundle.byteOffset, bundle.byteOffset + bundle.byteLength) as ArrayBuffer);
+  assert.ok(map.has("designspace.json"));
+  const keys = [...map.keys()];
+  assert.ok(keys.some((k) => k.startsWith("masters/m-regular/glyphs/")));
+  assert.ok(keys.some((k) => k.startsWith("masters/m-bold/glyphs/")));
 });
 
 test("path surgery flattens, unions overlaps, fixes direction", () => {

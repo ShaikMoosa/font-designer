@@ -175,10 +175,13 @@ function plistDict(entries: Array<[string, string | number]>): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n  <dict>\n${body}\n  </dict>\n</plist>\n`;
 }
 
-export function fontToUfoZip(font: Font): Uint8Array<ArrayBuffer> {
-  const masterId = font.currentMasterId;
+export function buildUfoFiles(font: Font, masterId: string): ZipFile[] {
   const files: ZipFile[] = [];
   files.push({ name: "metainfo.plist", data: plistDict([["creator", "Glyphs for Windows MVP"], ["formatVersion", 3]]) });
+  files.push({
+    name: "layercontents.plist",
+    data: `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n  <array>\n    <array>\n      <string>public.default</string>\n      <string>glyphs</string>\n    </array>\n  </array>\n</plist>\n`,
+  });
   files.push({
     name: "fontinfo.plist",
     data: plistDict([
@@ -213,6 +216,30 @@ export function fontToUfoZip(font: Font): Uint8Array<ArrayBuffer> {
       format: "glyphs-windows-designspace-manifest",
       axes: font.axes, masters: font.masters, instances: font.instances,
       note: "Manifest for masters/axes/instances; outlines in this UFO are the active (or instance) master, decomposed.",
+    }, null, 2),
+  });
+  return files;
+}
+
+export function fontToUfoZip(font: Font, masterIdOverride?: string): Uint8Array<ArrayBuffer> {
+  return zipStore(buildUfoFiles(font, masterIdOverride ?? font.currentMasterId));
+}
+
+// Bundle for the compile service: one UFO folder per master plus the
+// manifest the service turns into a real designspace for variable builds.
+export function fontToDesignspaceBundle(font: Font): Uint8Array<ArrayBuffer> {
+  const files: ZipFile[] = [];
+  for (const master of font.masters) {
+    for (const f of buildUfoFiles(font, master.id)) {
+      files.push({ name: `masters/${master.id}/${f.name}`, data: f.data });
+    }
+  }
+  files.push({
+    name: "designspace.json",
+    data: JSON.stringify({
+      format: "glyphs-windows-designspace-bundle",
+      familyName: font.familyName, unitsPerEm: font.unitsPerEm,
+      axes: font.axes, masters: font.masters, instances: font.instances,
     }, null, 2),
   });
   return zipStore(files);

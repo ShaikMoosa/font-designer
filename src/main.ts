@@ -7,10 +7,15 @@ import {
 } from "./model.ts";
 import type { Font, Glyph, GlyphLayer } from "./model.ts";
 import { fontToGlyphsJson, glyphsJsonToFont, downloadText, downloadBytes } from "./glyphs-io.ts";
-import { fontToUfoZip, unzipToMap, ufoMapToFont } from "./ufo.ts";
+import { fontToUfoZip, fontToDesignspaceBundle, unzipToMap, ufoMapToFont } from "./ufo.ts";
 import { fontToOtfArrayBuffer } from "./otf.ts";
+import { fontToTtfBytes } from "./ttf.ts";
+import { fontToWoffBytes } from "./woff.ts";
+import { validateFont } from "./validate.ts";
 import { parseFeatureCode, shapeText } from "./shaping.ts";
 import { fixContourDirections, unionContours } from "./pathsurgery.ts";
+
+const COMPILE_SERVICE = "http://127.0.0.1:8765";
 import { createEditor } from "./editor.ts";
 import type { Tool } from "./editor.ts";
 
@@ -641,6 +646,7 @@ function renderSide(): void {
   renderPalette(g);
   renderKerning();
   renderFeatures();
+  renderExport();
   renderFontInfo();
 }
 
@@ -726,14 +732,81 @@ function exportUfo() {
   downloadBytes(`${base}.ufo.zip`, fontToUfoZip(state.font), "application/zip");
   setStatus("Exported UFO as .ufo.zip — unzip to get the .ufo folder for FontForge/fontTools.");
 }
-function exportOtf() {
+async function probeCompileService(statusEl: HTMLElement): Promise<boolean> {
   try {
-    const buf = fontToOtfArrayBuffer(state.font);
-    const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
-    downloadBytes(`${base}.otf`, new Uint8Array(buf), "font/otf");
-    setStatus("Exported beta OTF from the active master. Proof it before shipping — hinting and OpenType features are deferred.");
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 900);
+    const res = await fetch(`${COMPILE_SERVICE}/health`, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const info = (await res.json()) as { fontTools?: string; brotli?: boolean };
+    statusEl.textContent = `Compile service: online (fontTools ${info.fontTools ?? "?"}, brotli ${info.brotli ? "yes" : "no"}). WOFF2/variable enabled.`;
+    return true;
+  } catch {
+    statusEl.textContent = "Compile service: offline. Browser formats (OTF/TTF/WOFF) still work; start tools/fontc for WOFF2/variable.";
+    return false;
+  }
+}
+
+function renderExport(): void {
+  const page = $("#side-export");
+  const report = validateFont(state.font);
+  const issueList = (items: Array<{ severity: string; message: string }>) => items.length
+    ? `<ul>${items.map((i) => `<li>${escHtml(i.message)}</li>`).join("")}</ul>` : "<p class=\"hint\">None.</p>";
+  page.innerHTML = `
+    <div class="field"><label>Format</label>
+      <select id="exportFormat">
+        <option value="otf">OpenType CFF (.otf) — browser</option>
+        <option value="ttf">TrueType (.ttf) — browser, curves approximated</option>
+        <option value="woff">WOFF (.woff from TTF) — browser</option>
+        <option value="woff2">WOFF2 (.woff2) — compile service</option>
+        <option value="variable">Variable font (.ttf) — compile service</option>
+      </select>
+    </div>
+    <div class="field"><button id="exportGo" type="button" ${report.ok ? "" : "disabled"}>Export font</button></div>
+    <p id="exportService" class="hint">Compile service: probing…</p>
+    <div class="field"><label>Validation errors (block export)</label>${issueList(report.errors)}</div>
+    <div class="field"><label>Warnings</label>${issueList(report.warnings)}</div>
+    <p class="hint">Exports use the active master (variable uses all masters). Handbook ref: Import &amp; Export (p104), Font Info Exports (p92). Full shaping/hinting stays deferred — proof binaries externally.</p>`;
+  void probeCompileService(qs<HTMLElement>(page, "#exportService"));
+  qs<HTMLButtonElement>(page, "#exportGo").addEventListener("click", () => { void runExport(qs<HTMLSelectElement>(page, "#exportFormat").value); });
+}
+
+async function runExport(format: string): Promise<void> {
+  const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
+  try {
+    if (format === "otf") {
+      downloadBytes(`${base}.otf`, new Uint8Array(fontToOtfArrayBuffer(state.font)), "font/otf");
+      setStatus("Exported OTF (CFF, active master).");
+      return;
+    }
+    if (format === "ttf") {
+      downloadBytes(`${base}.ttf`, fontToTtfBytes(state.font), "font/ttf");
+      setStatus("Exported TTF (glyf). Cubic curves were approximated by quadratics (tolerance 4 units).");
+      return;
+    }
+    if (format === "woff") {
+      downloadBytes(`${base}.woff`, await fontToWoffBytes(fontToTtfBytes(state.font)), "font/woff");
+      setStatus("Exported WOFF (from the TTF build).");
+      return;
+    }
+    if (format === "woff2") {
+      const res = await fetch(`${COMPILE_SERVICE}/compile/woff2`, { method: "POST", body: fontToTtfBytes(state.font) as BlobPart });
+      if (!res.ok) throw new Error(`service HTTP ${res.status}: ${await res.text()}`);
+      downloadBytes(`${base}.woff2`, new Uint8Array(await res.arrayBuffer()), "font/woff2");
+      setStatus("Exported WOFF2 via the compile service.");
+      return;
+    }
+    if (format === "variable") {
+      if (state.font.masters.length < 2) { setStatus("Variable export needs at least two masters — copy a layer to a new master in the Palette first."); return; }
+      const res = await fetch(`${COMPILE_SERVICE}/compile/variable`, { method: "POST", body: fontToDesignspaceBundle(state.font) as BlobPart });
+      if (!res.ok) throw new Error(`service HTTP ${res.status}: ${await res.text()}`);
+      downloadBytes(`${base}-Variable.ttf`, new Uint8Array(await res.arrayBuffer()), "font/ttf");
+      setStatus("Exported variable font via the compile service. Check the default instance against the Palette interpolation ghost.");
+      return;
+    }
   } catch (err) {
-    setStatus(`OTF export failed: ${(err as Error).message}`);
+    setStatus(`Export failed (${format}): ${(err as Error).message}. Browser formats still work without the service.`);
   }
 }
 
@@ -749,7 +822,7 @@ function dispatch(cmd: string): void {
     case "open": $<HTMLInputElement>("#fileInput").click(); break;
     case "save-glyphs": saveGlyphs(); break;
     case "export-ufo": exportUfo(); break;
-    case "export-otf": exportOtf(); break;
+    case "export-font": document.querySelector<HTMLButtonElement>('[data-side="export"]')?.click(); break;
     case "undo": undo(); break;
     case "redo": redo(); break;
     case "delete-sel": editor.deleteSelected(); break;

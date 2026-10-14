@@ -38,10 +38,15 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   export, feature-code subset (classes / ligatures / `pos`) driving the
   shaping preview, kerning groups + metrics keys, path-direction fix
   and boolean remove-overlaps (flattens curves).
+- **Phase 3 (Export tab):** Browser OTF (CFF), TTF (hand-written glyf
+  writer, cubic→quadratic at tolerance 4), and WOFF; pre-export
+  validation that blocks on errors; optional local compile service
+  (`tools/fontc`, `uv sync && uv run python server.py`) for WOFF2 and
+  variable fonts from the designspace bundle.
 
 ## Deferred (per Handbook)
 
-Variable-font binaries, smart/corner/brush components, filters beyond
-union, full OpenType shaping (marks, complex scripts), manual PS/TT
-hinting, color fonts, plug-ins.
+Smart/corner/brush components, filters beyond union, full OpenType
+shaping (marks, complex scripts), manual PS/TT hinting, color fonts,
+plug-ins.
 Icons and starter outlines are original to this MVP.
