@@ -1,0 +1,19 @@
+{
+  "name": "glyphs-windows",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows font editor inspired by the Glyphs 4 Handbook — core MVP",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5173",
+    "test": "node --test test/model.test.js"
+  },
+  "dependencies": {
+    "opentype.js": "^1.3.4"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5"
+  }
+}

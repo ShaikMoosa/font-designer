@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Glyphs for Windows — MVP</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="menubar">
+        <div class="brand"><span class="brand-mark">G</span><span>Glyphs <em>for Windows</em></span><span class="badge">MVP</span></div>
+        <nav class="menus" aria-label="Application menus">
+          <div class="menu">
+            <button class="menu-btn" type="button">File</button>
+            <div class="menu-drop">
+              <button data-cmd="new" type="button">New Font <kbd>Ctrl+N</kbd></button>
+              <button data-cmd="open" type="button">Open… <kbd>Ctrl+O</kbd></button>
+              <button data-cmd="save-glyphs" type="button">Save as .glyphs <kbd>Ctrl+S</kbd></button>
+              <button data-cmd="export-ufo" type="button">Export UFO (.zip) <kbd>Ctrl+E</kbd></button>
+              <button data-cmd="export-otf" type="button">Export OTF (beta)</button>
+            </div>
+          </div>
+          <div class="menu">
+            <button class="menu-btn" type="button">Edit</button>
+            <div class="menu-drop">
+              <button data-cmd="undo" type="button">Undo <kbd>Ctrl+Z</kbd></button>
+              <button data-cmd="redo" type="button">Redo <kbd>Ctrl+Y</kbd></button>
+              <button data-cmd="delete-sel" type="button">Delete Selection <kbd>Del</kbd></button>
+              <button data-cmd="close-path" type="button">Close Path</button>
+              <button data-cmd="convert" type="button">Convert Node Line/Curve</button>
+            </div>
+          </div>
+          <div class="menu">
+            <button class="menu-btn" type="button">View</button>
+            <div class="menu-drop">
+              <button data-cmd="zoom-in" type="button">Zoom In <kbd>Ctrl++</kbd></button>
+              <button data-cmd="zoom-out" type="button">Zoom Out <kbd>Ctrl+-</kbd></button>
+              <button data-cmd="zoom-fit" type="button">Zoom to Fit <kbd>Ctrl+0</kbd></button>
+              <button data-cmd="toggle-guides" type="button">Toggle Guides</button>
+              <button data-cmd="toggle-nodes" type="button">Toggle Nodes</button>
+            </div>
+          </div>
+          <div class="menu">
+            <button class="menu-btn" type="button">Glyph</button>
+            <div class="menu-drop">
+              <button data-cmd="add-glyph" type="button">Add Glyph…</button>
+              <button data-cmd="add-rect" type="button">Add Rectangle</button>
+              <button data-cmd="add-ellipse" type="button">Add Ellipse</button>
+            </div>
+          </div>
+        </nav>
+        <div class="head-actions">
+          <label class="master-pick">Master
+            <select id="masterSelect" aria-label="Active master"></select>
+          </label>
+          <span id="docName" class="doc-name">Untitled.glyphs</span>
+        </div>
+        <input id="fileInput" type="file" accept=".glyphs,.json,.zip" hidden />
+      </header>
+      <div id="workbench">
+        <aside id="fontview" aria-label="Font View">
+          <div class="panel-head">
+            <strong>Font View</strong>
+            <div class="seg" role="group" aria-label="Font view mode">
+              <button id="gridModeBtn" class="seg-btn is-on" type="button">Grid</button>
+              <button id="listModeBtn" class="seg-btn" type="button">List</button>
+            </div>
+          </div>
+          <input id="glyphSearch" type="search" placeholder="Search glyphs (e.g. A, eacute)" aria-label="Search glyphs" />
+          <div id="glyphGrid" class="glyph-grid"></div>
+          <div class="panel-foot">
+            <button id="addGlyphBtn" type="button">+ Glyph</button>
+            <span id="glyphCount" class="muted"></span>
+          </div>
+        </aside>
+        <main id="editview" aria-label="Edit View">
+          <div id="toolbar" role="toolbar" aria-label="Edit tools">
+            <button data-tool="select" class="tool is-on" type="button" title="Select (V)">Select</button>
+            <button data-tool="pen" class="tool" type="button" title="Pen — click to place nodes, drag for curves (P)">Pen</button>
+            <button data-tool="hand" class="tool" type="button" title="Hand — drag to pan (H)">Hand</button>
+            <button data-tool="text" class="tool" type="button" title="Text — edit preview string (T)">Text</button>
+            <span class="tool-sep"></span>
+            <button id="rectBtn" type="button" title="Add rectangle primitive">Rect</button>
+            <button id="ellipseBtn" type="button" title="Add ellipse primitive">Ellipse</button>
+            <button id="closePathBtn" type="button">Close path</button>
+            <button id="convertBtn" type="button">Convert</button>
+            <button id="deleteBtn" type="button">Delete</button>
+            <span class="tool-sep"></span>
+            <button id="undoBtn" type="button">Undo</button>
+            <button id="redoBtn" type="button">Redo</button>
+          </div>
+          <div id="tabs" class="tabs" role="tablist" aria-label="Open glyphs"></div>
+          <div id="canvasWrap">
+            <svg id="editorSvg" role="application" aria-label="Glyph outline editor" tabindex="0"></svg>
+            <div id="coordReadout" class="coord">0, 0</div>
+          </div>
+          <div id="previewBar">
+            <label>Preview
+              <input id="previewText" type="text" value="HAVO eon 123" aria-label="Preview text" />
+            </label>
+            <label>Size <input id="previewSize" type="range" min="24" max="140" value="72" /></label>
+            <div id="previewSvgWrap"><svg id="previewSvg" aria-label="Text preview"></svg></div>
+          </div>
+        </main>
+        <aside id="inspector" aria-label="Inspector and Palette">
+          <div class="side-tabs" role="tablist" aria-label="Inspector tabs">
+            <button data-side="inspector" class="side-tab is-on" type="button">Inspector</button>
+            <button data-side="palette" class="side-tab" type="button">Palette</button>
+            <button data-side="kerning" class="side-tab" type="button">Kerning</button>
+            <button data-side="fontinfo" class="side-tab" type="button">Font Info</button>
+          </div>
+          <section id="side-inspector" class="side-page is-on"></section>
+          <section id="side-palette" class="side-page"></section>
+          <section id="side-kerning" class="side-page"></section>
+          <section id="side-fontinfo" class="side-page"></section>
+        </aside>
+      </div>
+      <footer id="statusbar">
+        <span id="statusMsg">Ready — Pen draws, Select drags nodes. Ctrl+S saves .glyphs.</span>
+        <span id="statusRight" class="muted"></span>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
