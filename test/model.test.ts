@@ -5,10 +5,10 @@ import {
   resolveGlyphContours, interpolateGlyphAt, resolveKern, findGlyph,
   simplifyPoints, pencilContour, measureBetween, alignPoints,
 } from "../src/model.ts";
-import { fontToGlyphsJson, glyphsJsonToFont, parseOpenStep } from "../src/glyphs-io.ts";
+import { fontToGlyphsJson, glyphsJsonToFont, parseOpenStep, fontToOpenStep } from "../src/glyphs-io.ts";
 import { fontToUfoZip, unzipToMap, glyphToGlif } from "../src/ufo.ts";
 import { parseFeatureCode, shapeText } from "../src/shaping.ts";
-import { flattenContour, unionContours, fixContourDirections } from "../src/pathsurgery.ts";
+import { flattenContour, unionContours, fixContourDirections, differenceContours } from "../src/pathsurgery.ts";
 import { fontToTtfBytes, listSfntTables, sfntChecksum } from "../src/ttf.ts";
 import { fontToWoffBytes, parseSfntTables } from "../src/woff.ts";
 import { validateFont } from "../src/validate.ts";
@@ -252,6 +252,98 @@ test("align moves points to shared edges and distributes evenly", () => {
   assert.equal(pts[1].x, 50);
 });
 
+test("OpenStep .glyphs save round-trips masters, outlines and kerning", () => {
+  const font = createDefaultFont();
+  const text = fontToOpenStep(font);
+  assert.match(text, /^\{/);
+  assert.match(text, /familyName = "Handbook Sans"/);
+  const back = glyphsJsonToFont(text, "roundtrip.glyphs");
+  assert.equal(back.familyName, font.familyName);
+  assert.equal(back.glyphs.length, font.glyphs.length);
+  assert.equal(back.masters.length, font.masters.length);
+  assert.equal(back.kerning["A|V"], -70);
+  const a = findGlyph(back, "A");
+  assert.ok(a);
+  assert.equal(a.unicode, 0x41);
+  assert.equal(a.layers.masterRegular.paths.length, 2);
+  assert.equal(a.width, 680);
+  // Anchors survive with coordinates intact.
+  const e = findGlyph(back, "e");
+  assert.ok(e);
+  e.anchors = [{ name: "top", x: 290, y: 480 }];
+  const back2 = glyphsJsonToFont(fontToOpenStep(back), "roundtrip2.glyphs");
+  assert.deepEqual(findGlyph(back2, "e")?.anchors, [{ name: "top", x: 290, y: 480 }]);
+});
+
+test("smart component parameters drive the resolved outline", () => {
+  const font = createDefaultFont();
+  const stem = findGlyph(font, "hyphen");
+  assert.ok(stem);
+  stem.smartParams = [{ name: "Width", min: 0.5, max: 2, defaultValue: 1, apply: "scaleX" }];
+  const host = findGlyph(font, "H");
+  assert.ok(host);
+  host.components = [{ glyph: "hyphen", x: 0, y: 0, scaleX: 1, scaleY: 1 }];
+  const plain = glyphBounds({ ...host, layers: { masterRegular: { paths: [] } } } as never, "masterRegular");
+  void plain;
+  const withDefault = resolveGlyphContours(font, { ...host, layers: {} }, "masterRegular");
+  const wideHost = { ...host, components: [{ glyph: "hyphen", x: 0, y: 0, scaleX: 1, scaleY: 1, smart: { Width: 2 } }] };
+  const wide = resolveGlyphContours(font, wideHost, "masterRegular");
+  const widthOf = (cs: typeof wide) => Math.max(...cs.flatMap((c) => c.nodes.map((n) => n.x)));
+  assert.ok(widthOf(wide) > widthOf(withDefault) + 100, "smart Width=2 widens the part");
+});
+
+test("shaping positions combining marks on base anchors", () => {
+  const font = createDefaultFont();
+  const e = findGlyph(font, "e");
+  assert.ok(e);
+  e.anchors = [{ name: "top", x: 290, y: 480 }];
+  font.glyphs.push({
+    name: "acutecomb", unicode: 0x0301, width: 100, lsb: 0, rsb: 0, category: "Mark",
+    kerningGroupLeft: "", kerningGroupRight: "", metricsKeyLeft: "", metricsKeyRight: "",
+    anchors: [{ name: "_top", x: 30, y: 0 }],
+    components: [], layers: { masterRegular: { paths: [rectContour(0, 0, 60, 120)] } },
+  });
+  const shaped = shapeText(font, "é");
+  assert.equal(shaped.length, 2);
+  assert.equal(shaped[1].name, "acutecomb");
+  assert.equal(shaped[1].advance, 0);
+  assert.equal(shaped[1].dx, 260);
+  assert.equal(shaped[1].dy, 480);
+});
+
+test("TTF cmap gains format 12 for astral glyphs", () => {
+  const font = createDefaultFont();
+  font.glyphs.push({
+    name: "emoji", unicode: 0x1f600, width: 600, lsb: 0, rsb: 0, category: "Symbol",
+    kerningGroupLeft: "", kerningGroupRight: "", metricsKeyLeft: "", metricsKeyRight: "",
+    anchors: [], components: [], layers: { masterRegular: { paths: [rectContour(50, 0, 500, 500)] } },
+  });
+  const ttf = fontToTtfBytes(font);
+  const tables = parseSfntTables(ttf);
+  const cmap = tables.find((t) => t.tag === "cmap");
+  assert.ok(cmap);
+  const view = new DataView(cmap.data.buffer, cmap.data.byteOffset, cmap.data.byteLength);
+  const num = view.getUint16(2, false);
+  let fmt12Off = -1;
+  for (let i = 0; i < num; i++) {
+    const off = view.getUint32(4 + i * 8 + 4, false);
+    if (view.getUint16(off, false) === 12) fmt12Off = off;
+  }
+  assert.ok(fmt12Off >= 0, "cmap has a format 12 subtable");
+  const groups = view.getUint32(fmt12Off + 12, false);
+  let mapped = -1;
+  for (let gIdx = 0; gIdx < groups; gIdx++) {
+    const start = view.getUint32(fmt12Off + 16 + gIdx * 12, false);
+    const end = view.getUint32(fmt12Off + 16 + gIdx * 12 + 4, false);
+    const gid = view.getUint32(fmt12Off + 16 + gIdx * 12 + 8, false);
+    if (0x1f600 >= start && 0x1f600 <= end) mapped = gid + (0x1f600 - start);
+  }
+  const emojiIdx = font.glyphs.findIndex((g) => g.name === "emoji");
+  assert.equal(mapped, emojiIdx + 1); // +1 for .notdef at gid 0
+  const report = validateFont(font);
+  assert.ok(!report.warnings.some((w) => w.message.includes("outside the BMP")));
+});
+
 test("path surgery flattens, unions overlaps, fixes direction", () => {
   const ring = flattenContour(rectContour(0, 0, 100, 100));
   assert.ok(ring.length >= 4);
@@ -265,4 +357,14 @@ test("path surgery flattens, unions overlaps, fixes direction", () => {
   const contours = [cw];
   assert.equal(fixContourDirections(contours), 1);
   assert.equal(fixContourDirections(contours), 0);
+});
+
+test("boolean difference subtracts later contours from the first", () => {
+  const diff = differenceContours([rectContour(0, 0, 100, 100), rectContour(50, 50, 100, 100)]);
+  assert.equal(diff.length, 1);
+  const b = glyphBounds({ layers: { m: { paths: diff } } } as never, "m");
+  assert.ok(b);
+  assert.equal(b.maxX, 100);
+  assert.equal(b.maxY, 100);
+  assert.ok(diff[0].nodes.length >= 6, "L-shaped remainder has at least 6 nodes");
 });

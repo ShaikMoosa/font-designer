@@ -1,8 +1,9 @@
-// .glyphs JSON-subset import/export for this MVP.
-// Real .glyphs files may be OpenStep plist; those are reported clearly
-// instead of being silently misread. Export here is JSON so it round-trips.
+// .glyphs import/export. Real .glyphs files are OpenStep plist: the app
+// parses them (parseOpenStep) and, since Phase 5, also writes them
+// (fontToOpenStep) for the supported model subset. The older JSON subset
+// (fontToGlyphsJson) remains available as an explicit fallback save.
 import { DEFAULT_FEATURE_CODE } from "./model.ts";
-import type { Font, FontMaster, FontNode, Glyph, GlyphLayer, NodeType } from "./model.ts";
+import type { Font, FontMaster, FontNode, Glyph, GlyphLayer, NodeType, SmartApply } from "./model.ts";
 
 // Imported JSON is untrusted external data; it is normalized into Font below.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -87,7 +88,7 @@ export function parseTransform(text: unknown): { scaleX: number; scaleY: number;
   return { scaleX: p[0] || 1, scaleY: p[3] || 1, x: p[4] || 0, y: p[5] || 0 };
 }
 
-export function fontToGlyphsJson(font: Font): string {
+function glyphsDoc(font: Font): Loose {
   const doc = {
     app: "Glyphs for Windows MVP",
     formatNote: "JSON subset inspired by Glyphs 3; not a full .glyphs clone",
@@ -103,6 +104,7 @@ export function fontToGlyphsJson(font: Font): string {
       glyphname: g.name,
       unicode: g.unicode != null ? g.unicode.toString(16).toUpperCase().padStart(4, "0") : null,
       category: g.category,
+      smartParams: g.smartParams?.length ? g.smartParams : undefined,
       leftKerningGroup: g.kerningGroupLeft || undefined,
       rightKerningGroup: g.kerningGroupRight || undefined,
       leftMetricsKey: g.metricsKeyLeft || undefined,
@@ -117,8 +119,9 @@ export function fontToGlyphsJson(font: Font): string {
         components: (g.components || []).map((c) => ({
           name: c.glyph,
           transform: `{${c.scaleX}, 0, 0, ${c.scaleY}, ${c.x}, ${c.y}}`,
+          smart: c.smart && Object.keys(c.smart).length ? c.smart : undefined,
         })),
-        anchors: (g.anchors || []).map((a) => ({ name: a.name, position: `${a.x} ${a.y}` })),
+        anchors: (g.anchors || []).map((a) => ({ name: a.name, position: `{${a.x}, ${a.y}}` })),
       })),
     })),
     kerning: Object.entries(font.kerning).reduce<Record<string, Record<string, number>>>((acc, [k, v]) => {
@@ -133,7 +136,45 @@ export function fontToGlyphsJson(font: Font): string {
     featureCode: font.featureCode,
     instances: font.instances,
   };
-  return JSON.stringify(doc, null, 2);
+  return doc as Loose;
+}
+
+export function fontToGlyphsJson(font: Font): string {
+  return JSON.stringify(glyphsDoc(font), null, 2);
+}
+
+// --- OpenStep (old-style plist) writer ---
+const OS_BARE = /^[A-Za-z0-9_.\-+]+$/;
+function osString(s: string): string {
+  if (OS_BARE.test(s)) return s;
+  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\t/g, "\\t").replace(/\r/g, "\\r")}"`;
+}
+function osNumber(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 1000) / 1000);
+}
+function osValue(value: unknown, indent: number): string {
+  const pad = "  ".repeat(indent);
+  const padIn = "  ".repeat(indent + 1);
+  if (value === null || value === undefined) return '""';
+  if (typeof value === "number") return osNumber(value);
+  if (typeof value === "boolean") return value ? "1" : "0";
+  if (typeof value === "string") return osString(value);
+  if (Array.isArray(value)) {
+    if (!value.length) return "()";
+    return `(\n${value.map((v) => `${padIn}${osValue(v, indent + 1)}`).join(",\n")}\n${pad})`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined && v !== null);
+  if (!entries.length) return "{}";
+  return `{\n${entries.map(([k, v]) => `${padIn}${osString(k)} = ${osValue(v, indent + 1)};`).join("\n")}\n${pad}}`;
+}
+
+// Real .glyphs text (OpenStep plist) for the supported model subset:
+// font info, masters, glyphs/layers/nodes, anchors, components (incl.
+// smart values), smart parameter definitions, kerning, instances, axes,
+// feature code. Unknown Glyphs-only fields from opened files are not
+// preserved — the Save status line says so.
+export function fontToOpenStep(font: Font): string {
+  return `${osValue(glyphsDoc(font), 0)}\n`;
 }
 
 function parseNodeToken(tok: unknown): FontNode {
@@ -180,7 +221,11 @@ export function glyphsJsonToFont(text: string, fileName?: string): Font {
       if (!components.length && Array.isArray(layer.components)) {
         components = (layer.components as Loose[]).map((c) => {
           const t = parseTransform(c.transform);
-          return { glyph: String(c.name || ""), x: t.x, y: t.y, scaleX: t.scaleX, scaleY: t.scaleY };
+          const smart: Record<string, number> = {};
+          if (c.smart && typeof c.smart === "object") {
+            for (const [k, v] of Object.entries(c.smart as Record<string, unknown>)) smart[k] = Number(v) || 0;
+          }
+          return { glyph: String(c.name || ""), x: t.x, y: t.y, scaleX: t.scaleX, scaleY: t.scaleY, ...(Object.keys(smart).length ? { smart } : {}) };
         }).filter((c) => c.glyph);
       }
       if (!anchors.length && Array.isArray(layer.anchors)) {
@@ -204,6 +249,13 @@ export function glyphsJsonToFont(text: string, fileName?: string): Font {
       anchors,
       components,
       layers,
+      smartParams: Array.isArray(g.smartParams) ? (g.smartParams as Loose[]).map((p) => ({
+        name: String(p.name || "Param"),
+        min: Number(p.min) || 0,
+        max: Number(p.max) || 0,
+        defaultValue: Number(p.defaultValue) || 0,
+        apply: (["scaleX", "scaleY", "x", "y"].includes(String(p.apply)) ? String(p.apply) : "scaleX") as SmartApply,
+      })) : undefined,
     };
   });
   const kerning: Record<string, number> = {};

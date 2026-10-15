@@ -7,12 +7,15 @@ export interface FontNode { x: number; y: number; type: NodeType }
 export interface Contour { closed: boolean; nodes: FontNode[] }
 export interface GlyphLayer { paths: Contour[] }
 export interface Anchor { name: string; x: number; y: number }
-export interface ComponentRef { glyph: string; x: number; y: number; scaleX: number; scaleY: number }
+export interface ComponentRef { glyph: string; x: number; y: number; scaleX: number; scaleY: number; smart?: Record<string, number> }
+export type SmartApply = "scaleX" | "scaleY" | "x" | "y";
+export interface SmartParam { name: string; min: number; max: number; defaultValue: number; apply: SmartApply }
 export interface Glyph {
   name: string; unicode: number | null; width: number; lsb: number; rsb: number;
   category: string; kerningGroupLeft: string; kerningGroupRight: string;
   anchors: Anchor[]; layers: Record<string, GlyphLayer>;
   components: ComponentRef[]; metricsKeyLeft: string; metricsKeyRight: string;
+  smartParams?: SmartParam[];
 }
 export interface FontMaster { id: string; name: string; weightValue: number; axisValues?: Record<string, number> }
 export interface FontInstance { name: string; masterId: string; active: boolean; axisValues?: Record<string, number> }
@@ -225,8 +228,18 @@ export function resolveGlyphContours(font: Font, glyph: Glyph, masterId: string,
   for (const comp of glyph.components || []) {
     const base = findGlyph(font, comp.glyph);
     if (!base) continue;
+    // Smart parameters defined on the base glyph override the component's
+    // transform channels (instance value wins, else the declared default).
+    let { x, y, scaleX, scaleY } = { x: comp.x || 0, y: comp.y || 0, scaleX: comp.scaleX || 1, scaleY: comp.scaleY || 1 };
+    for (const def of base.smartParams || []) {
+      const v = comp.smart?.[def.name] ?? def.defaultValue;
+      if (def.apply === "scaleX") scaleX = v;
+      else if (def.apply === "scaleY") scaleY = v;
+      else if (def.apply === "x") x = v;
+      else y = v;
+    }
     for (const c of resolveGlyphContours(font, base, masterId, seen)) {
-      out.push(transformContour(c, comp.x || 0, comp.y || 0, comp.scaleX || 1, comp.scaleY || 1));
+      out.push(transformContour(c, x, y, scaleX, scaleY));
     }
   }
   return out;

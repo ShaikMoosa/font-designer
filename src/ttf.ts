@@ -1,6 +1,6 @@
 // Minimal TrueType (glyf) writer: cubic contours are approximated by
 // quadratics (explicit tolerance), tables are checksummed, cmap is
-// format 4 (BMP only — astral glyphs are reported by validate.ts).
+// format 4 for the BMP plus format 12 when astral glyphs are present.
 import { resolveGlyphContours } from "./model.ts";
 import type { Contour, Font, Glyph } from "./model.ts";
 
@@ -191,6 +191,38 @@ function buildCmap4(entries: Array<{ unicode: number; gid: number }>): Uint8Arra
   return out;
 }
 
+function buildCmap12Subtable(entries: Array<{ unicode: number; gid: number }>): Uint8Array {
+  const sorted = [...entries].sort((a, b) => a.unicode - b.unicode);
+  const out = new Uint8Array(16 + sorted.length * 12);
+  const view = new DataView(out.buffer);
+  view.setUint16(0, 12, false); view.setUint16(2, 0, false);
+  view.setUint32(4, out.length, false); view.setUint32(8, 0, false);
+  view.setUint32(12, sorted.length, false);
+  sorted.forEach((e, i) => {
+    const off = 16 + i * 12;
+    view.setUint32(off, e.unicode, false);
+    view.setUint32(off + 4, e.unicode, false);
+    view.setUint32(off + 8, e.gid, false);
+  });
+  return out;
+}
+
+function buildCmap(entries: Array<{ unicode: number; gid: number }>): Uint8Array {
+  if (!entries.some((e) => e.unicode > 0xffff)) return buildCmap4(entries);
+  const fmt4Full = buildCmap4(entries);
+  const fmt4 = fmt4Full.slice(12); // subtable only, cmap header replaced below
+  const fmt12 = buildCmap12Subtable(entries);
+  const headerLen = 4 + 2 * 8;
+  const out = new Uint8Array(headerLen + fmt4.length + fmt12.length);
+  const view = new DataView(out.buffer);
+  view.setUint16(0, 0, false); view.setUint16(2, 2, false);
+  view.setUint16(4, 3, false); view.setUint16(6, 1, false); view.setUint32(8, headerLen, false);
+  view.setUint16(12, 3, false); view.setUint16(14, 10, false); view.setUint32(16, headerLen + fmt4.length, false);
+  out.set(fmt4, headerLen);
+  out.set(fmt12, headerLen + fmt4.length);
+  return out;
+}
+
 function buildNameTable(family: string, style: string): Uint8Array {
   const records: Array<{ id: number; text: string }> = [
     { id: 1, text: family }, { id: 2, text: style },
@@ -300,7 +332,7 @@ export function fontToTtfBytes(font: Font): Uint8Array<ArrayBuffer> {
   tables.set("hmtx", hmtx);
   tables.set("glyf", glyfTable);
   tables.set("loca", locaTable);
-  tables.set("cmap", buildCmap4(glyphs.map((g, gid) => ({ unicode: g.unicode ?? -1, gid })).filter((e) => e.unicode >= 0)));
+  tables.set("cmap", buildCmap(glyphs.map((g, gid) => ({ unicode: g.unicode ?? -1, gid })).filter((e) => e.unicode >= 0)));
   tables.set("name", buildNameTable(font.familyName || "Untitled", "Regular"));
   const os2 = new Uint8Array(68);
   {

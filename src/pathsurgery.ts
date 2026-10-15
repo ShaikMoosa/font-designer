@@ -76,6 +76,25 @@ export function unionContours(contours: Contour[]): Contour[] {
   return [...out, ...open];
 }
 
+// Boolean-subtract the 2nd..nth closed contours from the 1st; open
+// contours pass through untouched. Curves are flattened like union.
+export function differenceContours(contours: Contour[]): Contour[] {
+  const closed = contours.filter((c) => c.closed && c.nodes.length >= 3);
+  const open = contours.filter((c) => !c.closed);
+  if (closed.length < 2) return contours;
+  const toPoly = (c: Contour) => {
+    const ring = flattenContour(c);
+    if (ring.length) ring.push([...ring[0]]);
+    return [ring];
+  };
+  const polys = closed.map(toPoly).filter((p) => p[0].length >= 4);
+  if (polys.length < 2) return contours;
+  const result = polygonClipping.difference(polys[0] as never, ...polys.slice(1) as never[]) as unknown as Array<Array<Ring>>;
+  const out: Contour[] = [];
+  for (const poly of result) for (const ring of poly) if (ring.length >= 3) out.push(ringToContour(ring));
+  return [...out, ...open];
+}
+
 // Ensure closed contours run counter-clockwise (positive area, Y-up).
 // Returns how many contours were reversed.
 export function fixContourDirections(contours: Contour[]): number {

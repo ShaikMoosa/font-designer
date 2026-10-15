@@ -28,9 +28,10 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   multi-master layer copy, pair kerning with live preview, family/metrics.
 - **Preview:** type a string below the editor; kerning applies; missing
   glyphs show as red boxes.
-- **Files:** Open/Save `.glyphs` (save is a JSON subset; real Mac
-  OpenStep-plist `.glyphs` files open with masters, anchors, components
-  and kerning), Export UFO as `.ufo.zip` (components decomposed, with
+- **Files:** Open/Save `.glyphs` — real Mac OpenStep-plist `.glyphs`
+  files open with masters, anchors, components and kerning, and saving
+  writes OpenStep plist for the supported subset (JSON subset save kept
+  as a fallback), Export UFO as `.ufo.zip` (components decomposed, with
   `designspace.json` + `kerning-groups.plist`), Export OTF (beta, active
   master, via opentype.js).
 - **Phase 2:** Components with live base-glyph updates and recipe
@@ -52,10 +53,20 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   dx/dy and angle without modifying the font. Shift-click builds a
   multi-node selection that drags/nudges/deletes together and feeds
   the alignment/distribute buttons in the toolbar.
+- **Phase 5 (Interchange & smart parts):** Saving writes real OpenStep
+  `.glyphs` (masters, layers, anchors, components, kerning, feature
+  code) with a JSON-subset fallback in the File menu. Smart components:
+  define named parameters (scaleX/scaleY/x/y, with min/max/default) on
+  a part glyph in the Inspector; glyphs using it as a component get
+  live sliders, and the values flow into editor, preview, UFO/TTF and
+  variable export. Preview shaping positions combining marks on
+  `top`/`_top` anchors (still a labelled subset). Browser TTF gains
+  cmap format 12 for astral-plane glyphs, and Palette gains boolean
+  Subtract alongside Remove overlaps.
 
 ## Deferred (per Handbook)
 
-Smart/corner/brush components, filters beyond union, full OpenType
-shaping (marks, complex scripts), manual PS/TT hinting, color fonts,
-plug-ins.
+Corner/brush components, full OpenType shaping (complex scripts,
+mark-to-mark), manual PS/TT hinting, color fonts, plug-ins, packaged
+Windows installer.
 Icons and starter outlines are original to this MVP.

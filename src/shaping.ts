@@ -1,9 +1,10 @@
 // Shaping-preview subset: parses the feature-code subset documented in the
-// Features panel (classes, ligature `sub`, kerning `pos`) and shapes preview
-// text into glyph + advance steps. Full OpenType shaping (mark positioning,
-// complex scripts) is intentionally out of scope and labelled in the UI.
+// Features panel (classes, ligature `sub`, kerning `pos`), shapes preview
+// text into glyph + advance steps, and positions combining marks on base
+// anchors (top/_top). Full OpenType shaping (complex scripts, mark-to-mark,
+// GPOS) is intentionally out of scope and labelled in the UI.
 import { findGlyph, resolveKern } from "./model.ts";
-import type { Font } from "./model.ts";
+import type { Font, Glyph } from "./model.ts";
 
 export interface ParsedFeatures {
   classes: Map<string, string[]>;
@@ -11,7 +12,13 @@ export interface ParsedFeatures {
   poss: Map<string, number>;
 }
 
-export interface ShapedItem { name: string | null; char: string; advance: number }
+export interface ShapedItem { name: string | null; char: string; advance: number; dx?: number; dy?: number }
+
+export function isMarkGlyph(glyph: Glyph): boolean {
+  if (glyph.category === "Mark") return true;
+  if (glyph.unicode != null && glyph.unicode >= 0x300 && glyph.unicode <= 0x36f) return true;
+  return glyph.name.endsWith("comb");
+}
 
 export function parseFeatureCode(code: string): ParsedFeatures {
   const classes = new Map<string, string[]>();
@@ -71,10 +78,22 @@ export function shapeText(font: Font, text: string, parsed?: ParsedFeatures): Sh
       i += 1;
     }
   }
+  let prevGlyph: Glyph | undefined;
   for (let k = 0; k < seq.length; k++) {
     const item = seq[k];
     if (!item.name) { out.push({ name: null, char: item.char, advance: 0 }); continue; }
     const glyph = findGlyph(font, item.name);
+    if (glyph && isMarkGlyph(glyph) && prevGlyph) {
+      // Mark: zero advance, positioned over the preceding base glyph.
+      // Anchor pair top (base) / _top (mark) wins; without anchors the
+      // mark is centred over the base at cap height.
+      const baseAnchor = prevGlyph.anchors?.find((a) => a.name === "top");
+      const markAnchor = glyph.anchors?.find((a) => a.name === "_top");
+      const dx = baseAnchor && markAnchor ? baseAnchor.x - markAnchor.x : Math.round(prevGlyph.width / 2);
+      const dy = baseAnchor && markAnchor ? baseAnchor.y - markAnchor.y : font.capHeight;
+      out.push({ name: item.name, char: item.char, advance: 0, dx, dy });
+      continue;
+    }
     let advance = glyph?.width ?? 0;
     const next = seq[k + 1]?.name;
     if (next) {
@@ -82,6 +101,7 @@ export function shapeText(font: Font, text: string, parsed?: ParsedFeatures): Sh
       advance += featurePos !== undefined ? featurePos : resolveKern(font, item.name, next);
     }
     out.push({ name: item.name, char: item.char, advance });
+    if (glyph) prevGlyph = glyph;
   }
   return out;
 }

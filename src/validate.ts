@@ -23,7 +23,7 @@ export function validateFont(font: Font): ValidationReport {
     const prev = byUnicode.get(g.unicode);
     if (prev) err(`Unicode U+${g.unicode.toString(16).toUpperCase()} is used by both "${prev}" and "${g.name}".`);
     else byUnicode.set(g.unicode, g.name);
-    if (g.unicode > 0xffff) warn(`"${g.name}" is outside the BMP; the TTF cmap (format 4) will omit it.`);
+    if (g.unicode > 0x10ffff) warn(`"${g.name}" has an out-of-range Unicode value; exports will omit it.`);
   }
   const masterId = font.currentMasterId;
   for (const g of font.glyphs) {

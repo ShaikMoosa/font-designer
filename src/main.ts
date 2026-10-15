@@ -6,14 +6,14 @@ import {
   compositeRecipe, interpolateGlyphAt, mastersCompatible, contoursToPathD,
 } from "./model.ts";
 import type { AlignMode, Font, Glyph, GlyphLayer } from "./model.ts";
-import { fontToGlyphsJson, glyphsJsonToFont, downloadText, downloadBytes } from "./glyphs-io.ts";
+import { fontToGlyphsJson, glyphsJsonToFont, fontToOpenStep, downloadText, downloadBytes } from "./glyphs-io.ts";
 import { fontToUfoZip, fontToDesignspaceBundle, unzipToMap, ufoMapToFont } from "./ufo.ts";
 import { fontToOtfArrayBuffer } from "./otf.ts";
 import { fontToTtfBytes } from "./ttf.ts";
 import { fontToWoffBytes } from "./woff.ts";
 import { validateFont } from "./validate.ts";
 import { parseFeatureCode, shapeText } from "./shaping.ts";
-import { fixContourDirections, unionContours } from "./pathsurgery.ts";
+import { fixContourDirections, unionContours, differenceContours } from "./pathsurgery.ts";
 
 const COMPILE_SERVICE = "http://127.0.0.1:8765";
 import { createEditor } from "./editor.ts";
@@ -255,6 +255,7 @@ function renderPreview() {
   // Shaping subset: ligatures, feature pos, pair + group kerning (Features tab).
   const shaped = shapeText(state.font, text);
   let cursor = 12;
+  let lastBaseX = 12;
   // Height grows with the proof size so caps/descenders are never clipped.
   const proofH = Math.round(size * 1.35) + 24;
   const baseline = proofH - 20;
@@ -270,16 +271,24 @@ function renderPreview() {
       continue;
     }
     const g = findGlyph(state.font, item.name);
+    const isMark = item.advance === 0 && item.dx !== undefined;
     if (g) {
       const d = glyphToPathDResolved(state.font, g, state.font.currentMasterId);
       if (d) {
         const p = document.createElementNS(SVGNS, "path");
         p.setAttribute("d", d);
-        p.setAttribute("transform", `translate(${cursor} ${baseline}) scale(${s} ${-s})`);
-        p.setAttribute("fill", "#e8ecf1"); p.setAttribute("fill-rule", "evenodd");
+        if (isMark) {
+          p.setAttribute("transform", `translate(${lastBaseX + (item.dx || 0) * s} ${baseline - (item.dy || 0) * s}) scale(${s} ${-s})`);
+          p.setAttribute("fill", "#6fca97");
+        } else {
+          p.setAttribute("transform", `translate(${cursor} ${baseline}) scale(${s} ${-s})`);
+          p.setAttribute("fill", "#e8ecf1");
+        }
+        p.setAttribute("fill-rule", "evenodd");
         svg.appendChild(p);
       }
     }
+    if (!isMark) lastBaseX = cursor;
     cursor += item.advance * s;
   }
   const totalW = Math.max(cursor + 12, 320);
@@ -331,6 +340,8 @@ function renderInspector(g: Glyph): void {
     <div class="field"><button id="syncMetricsBtn" type="button">Sync bearings from metrics keys</button></div>
     <div class="field"><label>Components (live from base glyphs)</label><div id="compList"></div></div>
     <div class="field"><button id="addCompBtn" type="button">+ Component…</button></div>
+    <div class="field"><label>Smart parameters (when this glyph is used as a part)</label><div id="smartList"></div></div>
+    <div class="field"><button id="addSmartBtn" type="button">+ Smart parameter…</button></div>
     <p class="hint">Layer: ${layer.paths.length} contour(s), ${nodeCount} node(s) on master
       ${escHtml(state.font.masters.find((m) => m.id === state.font.currentMasterId)?.name || "")}.
       Arrows nudge the selected node (Shift = ×10).</p>
@@ -394,12 +405,58 @@ function renderInspector(g: Glyph): void {
   });
   const compList = qs<HTMLElement>(page, "#compList");
   compList.innerHTML = (g.components || []).length
-    ? g.components.map((c, i) => `<div class="field-row"><span>${escHtml(c.glyph)} @ ${c.x}, ${c.y}</span><button data-comp-del="${i}" type="button">Remove</button></div>`).join("")
+    ? g.components.map((c, i) => {
+      const base = findGlyph(state.font, c.glyph);
+      const sliders = (base?.smartParams || []).map((p) => {
+        const val = c.smart?.[p.name] ?? p.defaultValue;
+        const step = Math.max((p.max - p.min) / 100, 0.01);
+        return `<div class="field-row"><label>${escHtml(p.name)} <span data-smart-val="${i}:${escHtml(p.name)}">${val}</span></label><input data-smart-comp="${i}" data-smart-name="${escHtml(p.name)}" type="range" min="${p.min}" max="${p.max}" step="${step}" value="${val}" /></div>`;
+      }).join("");
+      return `<div class="field-row"><span>${escHtml(c.glyph)} @ ${c.x}, ${c.y}</span><button data-comp-del="${i}" type="button">Remove</button></div>${sliders}`;
+    }).join("")
     : '<span class="hint">No components — this glyph is plain paths.</span>';
   compList.querySelectorAll<HTMLButtonElement>("[data-comp-del]").forEach((btn) => btn.addEventListener("click", () => {
     pushUndo(); g.components.splice(Number(btn.dataset.compDel) || 0, 1);
     editor.refresh(state.font, g); renderAll();
   }));
+  compList.querySelectorAll<HTMLInputElement>("[data-smart-comp]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const label = compList.querySelector(`[data-smart-val="${input.dataset.smartComp}:${input.dataset.smartName}"]`);
+      if (label) label.textContent = input.value;
+    });
+    input.addEventListener("change", () => {
+      const comp = g.components[Number(input.dataset.smartComp) || 0];
+      const name = input.dataset.smartName;
+      if (!comp || !name) return;
+      pushUndo();
+      comp.smart = { ...(comp.smart || {}), [name]: +input.value || 0 };
+      editor.refresh(state.font, g); renderAll();
+      setStatus(`Smart ${name} = ${input.value} on ${comp.glyph} — the outline updated live.`);
+    });
+  });
+  const smartList = qs<HTMLElement>(page, "#smartList");
+  smartList.innerHTML = (g.smartParams || []).length
+    ? (g.smartParams || []).map((p, i) => `<div class="field-row"><span>${escHtml(p.name)} → ${escHtml(p.apply)} (${p.min}…${p.max}, default ${p.defaultValue})</span><button data-smart-del="${i}" type="button">Remove</button></div>`).join("")
+    : '<span class="hint">None — add one to make this glyph an adjustable part.</span>';
+  smartList.querySelectorAll<HTMLButtonElement>("[data-smart-del]").forEach((btn) => btn.addEventListener("click", () => {
+    pushUndo(); (g.smartParams || []).splice(Number(btn.dataset.smartDel) || 0, 1);
+    editor.refresh(state.font, g); renderAll();
+  }));
+  qs<HTMLButtonElement>(page, "#addSmartBtn").addEventListener("click", () => {
+    const name = prompt("Parameter name (e.g. Width):", "Width");
+    if (!name?.trim()) return;
+    const apply = (prompt("Applies to: scaleX, scaleY, x or y:", "scaleX") || "").trim();
+    if (!["scaleX", "scaleY", "x", "y"].includes(apply)) { setStatus("Smart parameter needs one of: scaleX, scaleY, x, y."); return; }
+    const min = parseFloat(prompt("Minimum value:", apply.startsWith("scale") ? "0.5" : "0") || "");
+    const max = parseFloat(prompt("Maximum value:", apply.startsWith("scale") ? "2" : "100") || "");
+    const def = parseFloat(prompt("Default value:", apply.startsWith("scale") ? "1" : "0") || "");
+    if (![min, max, def].every(Number.isFinite) || max <= min) { setStatus("Smart parameter values must be numbers with max > min."); return; }
+    pushUndo();
+    g.smartParams = g.smartParams || [];
+    g.smartParams.push({ name: name.trim(), min, max, defaultValue: def, apply: apply as "scaleX" | "scaleY" | "x" | "y" });
+    editor.refresh(state.font, g); renderAll();
+    setStatus(`Smart parameter ${name.trim()} defined on ${g.name}. Glyphs using it as a component get a slider here.`);
+  });
   qs<HTMLButtonElement>(page, "#addCompBtn").addEventListener("click", () => {
     const baseName = prompt("Base glyph name for the component (e.g. e, acutecomb):", "e");
     if (!baseName) return;
@@ -478,6 +535,7 @@ function renderPalette(g: Glyph): void {
       <button id="palFixDir" type="button">Fix path direction</button>
     </div>
     <div class="field"><button id="palUnion" type="button">Remove overlaps (union, flattens curves)</button></div>
+    <div class="field"><button id="palSubtract" type="button">Subtract overlaps (first contour minus the rest, flattens curves)</button></div>
     <p class="hint">Handbook ref: Palette (p54), Transformations (p56), Interpolation (p150). Interpolation needs compatible masters (same contour/node order). Union flattens curves to lines — undo is available.</p>`;
   qs<HTMLButtonElement>(page, "#palApply").addEventListener("click", () => {
     pushUndo();
@@ -555,6 +613,15 @@ function renderPalette(g: Glyph): void {
     editor.refresh(state.font, g); renderAll();
     setStatus(`Remove overlaps: ${before} → ${layer.paths.length} contour(s). Curves were flattened — Ctrl+Z restores them.`);
   });
+  qs<HTMLButtonElement>(page, "#palSubtract").addEventListener("click", () => {
+    pushUndo();
+    const layer = layerOf(g);
+    const before = layer.paths.length;
+    layer.paths = differenceContours(layer.paths);
+    syncBearings(state.font, g);
+    editor.refresh(state.font, g); renderAll();
+    setStatus(`Subtract: ${before} → ${layer.paths.length} contour(s). Curves were flattened — Ctrl+Z restores them.`);
+  });
   qs<HTMLButtonElement>(page, "#palCopyLayer").addEventListener("click", () => { addMasterCopy(); });
 }
 
@@ -629,7 +696,7 @@ function renderFeatures(): void {
     </div>
     <div class="field"><button id="featureApply" type="button">Apply feature code</button></div>
     <p class="hint">Parsed: ${parsed.classes.size} class(es), ${parsed.subs.length} substitution(s), ${parsed.poss.size} position pair(s). Supported: <span class="muted">@Class = [A B];</span>, <span class="muted">sub f i by fi;</span>, <span class="muted">pos A V -70;</span> (classes expand in pos). Applied live in the preview below. Handbook ref: Feature Code (p179).</p>
-    <p class="warn">Subset only: mark positioning, complex-script shaping and full OpenType layout are deferred — proof final fonts in a real shaper before shipping.</p>`;
+    <p class="warn">Subset only: combining marks position on top/_top anchors in the preview; complex-script shaping and full OpenType layout are deferred — proof final fonts in a real shaper before shipping.</p>`;
   qs<HTMLButtonElement>(page, "#featureApply").addEventListener("click", () => {
     pushUndo();
     state.font.featureCode = qs<HTMLTextAreaElement>(page, "#featureCode").value;
@@ -790,10 +857,17 @@ async function handleOpenFile(file: File): Promise<void> {
 
 function saveGlyphs() {
   const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
+  downloadText(`${base}.glyphs`, fontToOpenStep(state.font), "text/plain");
+  state.font.fileName = `${base}.glyphs`;
+  renderHeader();
+  setStatus("Saved .glyphs (OpenStep plist: masters, layers, anchors, components, kerning). Glyphs-only fields this app does not model are not preserved.");
+}
+function saveGlyphsJson() {
+  const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
   downloadText(`${base}.glyphs`, fontToGlyphsJson(state.font));
   state.font.fileName = `${base}.glyphs`;
   renderHeader();
-  setStatus("Saved .glyphs (JSON subset, reopens here). Real Mac .glyphs files (OpenStep) also open here; saving stays JSON in this build.");
+  setStatus("Saved .glyphs (JSON subset fallback — reopens here; prefer OpenStep for other tools).");
 }
 function exportUfo() {
   const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
@@ -889,6 +963,7 @@ function dispatch(cmd: string): void {
       break;
     case "open": $<HTMLInputElement>("#fileInput").click(); break;
     case "save-glyphs": saveGlyphs(); break;
+    case "save-glyphs-json": saveGlyphsJson(); break;
     case "export-ufo": exportUfo(); break;
     case "export-font": document.querySelector<HTMLButtonElement>('[data-side="export"]')?.click(); break;
     case "undo": undo(); break;
