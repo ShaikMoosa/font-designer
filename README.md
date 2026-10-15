@@ -6,12 +6,31 @@ Font View, spacing & kerning, and Glyphs + UFO interchange.
 
 ## Run
 
+Browser development build:
+
 ```powershell
 npm install
 npm run dev
 ```
 
 Then open the URL Vite prints (default http://127.0.0.1:5173/) in a browser.
+
+Windows desktop app (Phase 6, Electron shell):
+
+```powershell
+npm install
+npm run desktop   # builds dist/ and launches the desktop app — no terminal-hosted browser needed at run time
+npm run dist:win  # writes NSIS installer + portable .exe to release/
+```
+
+The desktop app uses native Windows Open/Save dialogs for `.glyphs`,
+UFO `.zip`, and exported fonts; the browser build keeps its file-input
+and download fallbacks. The installer is **unsigned** in Phase 6, so
+Windows SmartScreen will warn on first run (choose *More info → Run
+anyway*); code signing needs a purchased certificate. The Python
+compile service is **not** bundled: WOFF2 and variable-font export
+show a clear offline status when `tools/fontc` is not running, while
+browser-native OTF/TTF/WOFF export keeps working.
 
 Other commands: `npm run build`, `npm run preview`, `npm test`, `npm run typecheck`.
 The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.ts` via Node type stripping.
@@ -63,10 +82,22 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   `top`/`_top` anchors (still a labelled subset). Browser TTF gains
   cmap format 12 for astral-plane glyphs, and Palette gains boolean
   Subtract alongside Remove overlaps.
+- **Phase 6 (Desktop packaging):** Electron shell (`electron/main.cjs`,
+  secure preload bridge, single-instance window, native application
+  menu) loads the Vite build directly, so the app launches as a
+  Windows desktop app without a terminal or browser. Open, Save
+  `.glyphs`, UFO export, instance export, and OTF/TTF/WOFF/WOFF2/
+  variable export use native Windows file dialogs in the desktop
+  app and keep the browser fallbacks on the web. `npm run dist:win`
+  produces an NSIS installer (install-directory choice, desktop and
+  Start-menu shortcuts) and a portable `.exe` in `release/`. Not
+  bundled in Phase 6: the Python compile service (WOFF2/variable
+  export degrades with a clear offline status) and code signing
+  (unsigned installer — SmartScreen warning documented above).
 
 ## Deferred (per Handbook)
 
 Corner/brush components, full OpenType shaping (complex scripts,
-mark-to-mark), manual PS/TT hinting, color fonts, plug-ins, packaged
-Windows installer.
+mark-to-mark), manual PS/TT hinting, color fonts, plug-ins, bundled
+compile service, signed Windows installer.
 Icons and starter outlines are original to this MVP.

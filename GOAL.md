@@ -41,7 +41,7 @@ Deliver a working font editor in which a user can complete the full arc of makin
 ## Quality & Engineering Standards
 
 - **TypeScript, strict typechecking clean** (`npm run typecheck`).
-- **Every behavior change carries maintained tests** (`npm test`, currently 21 tests) in the repository's own test layout.
+- **Every behavior change carries maintained tests** (`npm test`, currently 27 tests) in the repository's own test layout.
 - **Independent verification:** exported fonts are read back by external tools (fontTools), and UI behavior is proven with a headless-browser playthrough before any feature is called done — a feature is not done because code exists, it is done because its effect was observed.
 - **Honest subset labelling:** wherever the app implements less than full Glyphs/OpenType behavior (feature-code subset, quadratic curve conversion, unmodelled `.glyphs` fields), the UI and README say so plainly instead of implying parity.
 - **Per-phase delivery:** work ships in reviewed phases (plan → implement → verify → commit on the user's word), published to `github.com/ShaikMoosa/font-designer`.
@@ -49,7 +49,7 @@ Deliver a working font editor in which a user can complete the full arc of makin
 ## Current Status
 
 - **Phases 1–5 complete and pushed:** core MVP (drawing, Font View, kerning, UFO/`.glyphs` open), components/interpolation/feature preview (Phase 2), export fidelity with validation, compile service, and variable fonts (Phase 3), editing depth — side-by-side masters, Pencil, Measure, alignment (Phase 4), and OpenStep saving, smart components, mark positioning, cmap format 12 (Phase 5).
-- **Phase 6 planned:** packaged Windows installer (Electron shell, native file dialogs, NSIS + portable builds) so the app launches as a desktop app without a terminal or browser.
+- **Phase 6 complete, pending commit on the user's word:** packaged Windows installer (Electron shell, native file dialogs, NSIS + portable builds) so the app launches as a desktop app without a terminal or browser. Verified: `npm install`, `npm test` (27/27), `npm run typecheck` (clean), and `npm run dist:win` all pass; `release/Glyphs for Windows-0.1.0-Setup.exe` and `release/Glyphs for Windows-0.1.0-Portable.exe` are produced, and the unpacked app launches and stays running.
 
 ## Explicit Non-Goals
 

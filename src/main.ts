@@ -14,6 +14,7 @@ import { fontToWoffBytes } from "./woff.ts";
 import { validateFont } from "./validate.ts";
 import { parseFeatureCode, shapeText } from "./shaping.ts";
 import { fixContourDirections, unionContours, differenceContours } from "./pathsurgery.ts";
+import { base64ToBytes, desktopOpenFile, desktopSaveBytes, desktopSaveText, fileKindForName, isDesktop, onDesktopMenuCommand } from "./desktop.ts";
 
 const COMPILE_SERVICE = "http://127.0.0.1:8765";
 import { createEditor } from "./editor.ts";
@@ -581,7 +582,7 @@ function renderPalette(g: Glyph): void {
   };
   interpSlider.addEventListener("input", updateInterp);
   updateInterp();
-  qs<HTMLButtonElement>(page, "#palExportInstance").addEventListener("click", () => {
+  qs<HTMLButtonElement>(page, "#palExportInstance").addEventListener("click", async () => {
     const t = (+interpSlider.value || 0) / 100;
     if (!mastersCompatible(state.font, g.name) && state.font.masters.length >= 2) {
       setStatus("Instance export needs compatible masters for every glyph — fix outline order first.");
@@ -593,7 +594,7 @@ function renderPalette(g: Glyph): void {
       if (ig) glyph.layers[instanceFont.currentMasterId] = ig.layers[instanceFont.currentMasterId];
     }
     const base = (state.font.familyName || "Instance").replace(/[^\w\- ]/g, "").trim() || "Instance";
-    downloadBytes(`${base}-Instance.ufo.zip`, fontToUfoZip(instanceFont), "application/zip");
+    if (!await deliverBytes(`${base}-Instance.ufo.zip`, fontToUfoZip(instanceFont), "application/zip")) { setStatus("Export cancelled."); return; }
     setStatus(`Exported instance UFO at t=${t.toFixed(2)} (decomposed, with designspace.json manifest).`);
   });
   qs<HTMLButtonElement>(page, "#palFixDir").addEventListener("click", () => {
@@ -835,43 +836,90 @@ function createCompositeFlow(): void {
   setStatus(`${g.name} is now a composite (${recipe.join(" + ")}).`);
 }
 
+function applyOpenedFont(font: Font, fileName: string): void {
+  state.font = font;
+  state.undoStack = []; state.redoStack = [];
+  state.currentGlyphName = state.font.glyphs[0]?.name || "";
+  state.openTabs = state.currentGlyphName ? [state.currentGlyphName] : [];
+  ensureCurrentGlyph();
+  editor.setGlyph(state.font, currentGlyph());
+  renderAll();
+  setStatus(`Opened ${fileName} — ${state.font.glyphs.length} glyphs, master ${state.font.currentMasterId}.`);
+}
+
 async function handleOpenFile(file: File): Promise<void> {
   try {
     if (/\.zip$/i.test(file.name)) {
       const map = await unzipToMap(await file.arrayBuffer());
-      state.font = ufoMapToFont(map, file.name);
+      applyOpenedFont(ufoMapToFont(map, file.name), file.name);
     } else {
-      state.font = glyphsJsonToFont(await file.text(), file.name);
+      applyOpenedFont(glyphsJsonToFont(await file.text(), file.name), file.name);
     }
-    state.undoStack = []; state.redoStack = [];
-    state.currentGlyphName = state.font.glyphs[0]?.name || "";
-    state.openTabs = state.currentGlyphName ? [state.currentGlyphName] : [];
-    ensureCurrentGlyph();
-    editor.setGlyph(state.font, currentGlyph());
-    renderAll();
-    setStatus(`Opened ${file.name} — ${state.font.glyphs.length} glyphs, master ${state.font.currentMasterId}.`);
   } catch (err) {
     setStatus(`Open failed: ${(err as Error).message}`);
   }
 }
 
-function saveGlyphs() {
+async function handleDesktopOpen(): Promise<void> {
+  try {
+    const picked = await desktopOpenFile();
+    if (!picked) { setStatus("Open cancelled."); return; }
+    if (fileKindForName(picked.name) === "binary") {
+      const bytes = base64ToBytes(picked.base64 || "");
+      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      const map = await unzipToMap(buffer);
+      applyOpenedFont(ufoMapToFont(map, picked.name), picked.name);
+    } else {
+      applyOpenedFont(glyphsJsonToFont(picked.text || "", picked.name), picked.name);
+    }
+  } catch (err) {
+    setStatus(`Open failed: ${(err as Error).message}`);
+  }
+}
+
+function openFontFlow(): void {
+  if (isDesktop()) { void handleDesktopOpen(); return; }
+  $<HTMLInputElement>("#fileInput").click();
+}
+
+/** Desktop: native save dialog. Browser: download. False means the user cancelled. */
+async function deliverText(filename: string, text: string, mime: string): Promise<boolean> {
+  const saved = await desktopSaveText(filename, text);
+  if (saved) {
+    if (saved.saved) setStatus(`Saved to ${saved.path || saved.name || filename}.`);
+    return saved.saved;
+  }
+  downloadText(filename, text, mime);
+  return true;
+}
+
+async function deliverBytes(filename: string, bytes: Uint8Array<ArrayBuffer>, mime: string): Promise<boolean> {
+  const saved = await desktopSaveBytes(filename, bytes);
+  if (saved) {
+    if (saved.saved) setStatus(`Saved to ${saved.path || saved.name || filename}.`);
+    return saved.saved;
+  }
+  downloadBytes(filename, bytes, mime);
+  return true;
+}
+
+async function saveGlyphs(): Promise<void> {
   const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
-  downloadText(`${base}.glyphs`, fontToOpenStep(state.font), "text/plain");
+  if (!await deliverText(`${base}.glyphs`, fontToOpenStep(state.font), "text/plain")) { setStatus("Save cancelled."); return; }
   state.font.fileName = `${base}.glyphs`;
   renderHeader();
   setStatus("Saved .glyphs (OpenStep plist: masters, layers, anchors, components, kerning). Glyphs-only fields this app does not model are not preserved.");
 }
-function saveGlyphsJson() {
+async function saveGlyphsJson(): Promise<void> {
   const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
-  downloadText(`${base}.glyphs`, fontToGlyphsJson(state.font));
+  if (!await deliverText(`${base}.glyphs`, fontToGlyphsJson(state.font), "application/json")) { setStatus("Save cancelled."); return; }
   state.font.fileName = `${base}.glyphs`;
   renderHeader();
   setStatus("Saved .glyphs (JSON subset fallback — reopens here; prefer OpenStep for other tools).");
 }
-function exportUfo() {
+async function exportUfo(): Promise<void> {
   const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
-  downloadBytes(`${base}.ufo.zip`, fontToUfoZip(state.font), "application/zip");
+  if (!await deliverBytes(`${base}.ufo.zip`, fontToUfoZip(state.font), "application/zip")) { setStatus("Export cancelled."); return; }
   setStatus("Exported UFO as .ufo.zip — unzip to get the .ufo folder for FontForge/fontTools.");
 }
 async function probeCompileService(statusEl: HTMLElement): Promise<boolean> {
@@ -918,24 +966,24 @@ async function runExport(format: string): Promise<void> {
   const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
   try {
     if (format === "otf") {
-      downloadBytes(`${base}.otf`, new Uint8Array(fontToOtfArrayBuffer(state.font)), "font/otf");
+      if (!await deliverBytes(`${base}.otf`, new Uint8Array(fontToOtfArrayBuffer(state.font)), "font/otf")) { setStatus("Export cancelled."); return; }
       setStatus("Exported OTF (CFF, active master).");
       return;
     }
     if (format === "ttf") {
-      downloadBytes(`${base}.ttf`, fontToTtfBytes(state.font), "font/ttf");
+      if (!await deliverBytes(`${base}.ttf`, fontToTtfBytes(state.font), "font/ttf")) { setStatus("Export cancelled."); return; }
       setStatus("Exported TTF (glyf). Cubic curves were approximated by quadratics (tolerance 4 units).");
       return;
     }
     if (format === "woff") {
-      downloadBytes(`${base}.woff`, await fontToWoffBytes(fontToTtfBytes(state.font)), "font/woff");
+      if (!await deliverBytes(`${base}.woff`, await fontToWoffBytes(fontToTtfBytes(state.font)), "font/woff")) { setStatus("Export cancelled."); return; }
       setStatus("Exported WOFF (from the TTF build).");
       return;
     }
     if (format === "woff2") {
       const res = await fetch(`${COMPILE_SERVICE}/compile/woff2`, { method: "POST", body: fontToTtfBytes(state.font) as BlobPart });
       if (!res.ok) throw new Error(`service HTTP ${res.status}: ${await res.text()}`);
-      downloadBytes(`${base}.woff2`, new Uint8Array(await res.arrayBuffer()), "font/woff2");
+      if (!await deliverBytes(`${base}.woff2`, new Uint8Array(await res.arrayBuffer()), "font/woff2")) { setStatus("Export cancelled."); return; }
       setStatus("Exported WOFF2 via the compile service.");
       return;
     }
@@ -943,7 +991,7 @@ async function runExport(format: string): Promise<void> {
       if (state.font.masters.length < 2) { setStatus("Variable export needs at least two masters — copy a layer to a new master in the Palette first."); return; }
       const res = await fetch(`${COMPILE_SERVICE}/compile/variable`, { method: "POST", body: fontToDesignspaceBundle(state.font) as BlobPart });
       if (!res.ok) throw new Error(`service HTTP ${res.status}: ${await res.text()}`);
-      downloadBytes(`${base}-Variable.ttf`, new Uint8Array(await res.arrayBuffer()), "font/ttf");
+      if (!await deliverBytes(`${base}-Variable.ttf`, new Uint8Array(await res.arrayBuffer()), "font/ttf")) { setStatus("Export cancelled."); return; }
       setStatus("Exported variable font via the compile service. Check the default instance against the Palette interpolation ghost.");
       return;
     }
@@ -961,10 +1009,10 @@ function dispatch(cmd: string): void {
       state.currentGlyphName = "A"; state.openTabs = ["A"];
       editor.setGlyph(state.font, currentGlyph()); renderAll(); setStatus("New font — Handbook Sans starter set.");
       break;
-    case "open": $<HTMLInputElement>("#fileInput").click(); break;
-    case "save-glyphs": saveGlyphs(); break;
-    case "save-glyphs-json": saveGlyphsJson(); break;
-    case "export-ufo": exportUfo(); break;
+    case "open": openFontFlow(); break;
+    case "save-glyphs": void saveGlyphs(); break;
+    case "save-glyphs-json": void saveGlyphsJson(); break;
+    case "export-ufo": void exportUfo(); break;
     case "export-font": document.querySelector<HTMLButtonElement>('[data-side="export"]')?.click(); break;
     case "undo": undo(); break;
     case "redo": redo(); break;
@@ -1057,7 +1105,8 @@ document.addEventListener("keydown", (ev) => {
   if (k === "t") { setTool("text"); $<HTMLInputElement>("#previewText").focus(); }
 });
 
-// Boot.
+// Boot. In the Electron shell the native menu drives the same commands.
+onDesktopMenuCommand((command) => dispatch(command));
 editor.setGlyph(state.font, currentGlyph());
 renderAll();
 setTool("select");
