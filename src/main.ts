@@ -12,7 +12,8 @@ import { fontToOtfArrayBuffer } from "./otf.ts";
 import { fontToTtfBytes } from "./ttf.ts";
 import { fontToWoffBytes } from "./woff.ts";
 import { validateFont } from "./validate.ts";
-import { parseFeatureCode, shapeText } from "./shaping.ts";
+import { effectiveFeatures, generateFeatures, parseFeatureCode, shapeText } from "./shaping.ts";
+import { proofExportBytes, proofGate } from "./proofing.ts";
 import { fixContourDirections, unionContours, differenceContours } from "./pathsurgery.ts";
 import { base64ToBytes, desktopOpenFile, desktopSaveBytes, desktopSaveText, fileKindForName, isDesktop, onDesktopMenuCommand } from "./desktop.ts";
 
@@ -691,25 +692,39 @@ function renderKerning(): void {
 function renderFeatures(): void {
   const page = $("#side-features");
   const parsed = parseFeatureCode(state.font.featureCode || "");
+  const auto = generateFeatures(state.font);
+  const effective = effectiveFeatures(state.font);
   page.innerHTML = `
-    <div class="field"><label>Feature code (subset)</label>
+    <div class="field"><label>Automatic feature code (generated, read-only)</label>
+      <textarea id="autoFeatureCode" spellcheck="false" readonly>${escHtml(auto.code)}</textarea>
+    </div>
+    <p class="hint">Generated: ${auto.kernPairs} kern pair(s), ${auto.groupPairs} group pair(s), ${auto.ligatures} ligature(s), ${auto.markAttachments} mark attachment(s), ${auto.markToMark} mark-to-mark. Exported as UFO <span class="muted">features.fea</span> and shaped live in the preview below.</p>
+    <div class="field"><label>Manual feature code (subset, overrides automatic)</label>
       <textarea id="featureCode" spellcheck="false">${escHtml(state.font.featureCode || "")}</textarea>
     </div>
-    <div class="field"><button id="featureApply" type="button">Apply feature code</button></div>
-    <p class="hint">Parsed: ${parsed.classes.size} class(es), ${parsed.subs.length} substitution(s), ${parsed.poss.size} position pair(s). Supported: <span class="muted">@Class = [A B];</span>, <span class="muted">sub f i by fi;</span>, <span class="muted">pos A V -70;</span> (classes expand in pos). Applied live in the preview below. Handbook ref: Feature Code (p179).</p>
-    <p class="warn">Subset only: combining marks position on top/_top anchors in the preview; complex-script shaping and full OpenType layout are deferred — proof final fonts in a real shaper before shipping.</p>`;
+    <div class="field-row">
+      <button id="featureApply" type="button">Apply manual code</button>
+      <button id="featureUseAuto" type="button">Copy automatic into manual</button>
+    </div>
+    <p class="hint">Manual parsed: ${parsed.classes.size} class(es), ${parsed.subs.length} substitution(s), ${parsed.poss.size} position pair(s). Effective preview total: ${effective.subs.length} substitution(s), ${effective.poss.size} position pair(s). Supported: <span class="muted">@Class = [A B];</span>, <span class="muted">sub f i by fi;</span>, <span class="muted">pos A V -70;</span> (classes expand in pos). Handbook ref: Feature Code (p179), Font Info Features (p92).</p>
+    <p class="warn">Subset only: marks position on anchors in the preview (including mark-to-mark); complex-script shaping and full OpenType layout are deferred — exports are proofed by fontTools readback in the Export tab.</p>`;
   qs<HTMLButtonElement>(page, "#featureApply").addEventListener("click", () => {
     pushUndo();
     state.font.featureCode = qs<HTMLTextAreaElement>(page, "#featureCode").value;
     renderAll();
-    const p = parseFeatureCode(state.font.featureCode);
-    setStatus(`Feature code applied: ${p.subs.length} sub(s), ${p.poss.size} pos pair(s). Try the preview text “fi” or “AV”.`);
+    const p = effectiveFeatures(state.font);
+    setStatus(`Feature code applied: ${p.subs.length} effective sub(s), ${p.poss.size} effective pos pair(s). Try the preview text “fi” or “AV”.`);
+  });
+  qs<HTMLButtonElement>(page, "#featureUseAuto").addEventListener("click", () => {
+    qs<HTMLTextAreaElement>(page, "#featureCode").value = auto.code;
+    setStatus("Automatic code copied into the manual editor — Apply manual code to use it as manual (automatic generation still applies underneath).");
   });
 }
 
 function renderFontInfo(): void {
   const page = $("#side-fontinfo");
   const f = state.font;
+  const autoFeatures = generateFeatures(f);
   page.innerHTML = `
     <div class="field"><label>Family name</label><input id="fiFamily" type="text" value="${escHtml(f.familyName)}" /></div>
     <div class="field-row">
@@ -726,7 +741,8 @@ function renderFontInfo(): void {
     </div>
     <p class="hint"><strong>Masters:</strong> ${f.masters.map((m) => escHtml(`${m.name} (${m.weightValue})`)).join(", ") || "—"}<br/>
     <strong>Instances:</strong> ${f.instances.map((i) => escHtml(i.name)).join(", ") || "—"}<br/>
-    <strong>Axes:</strong> ${(f.axes || []).map((a) => escHtml(`${a.name} ${a.min}…${a.max} (default ${a.defaultValue})`)).join(", ") || "—"}</p>
+    <strong>Axes:</strong> ${(f.axes || []).map((a) => escHtml(`${a.name} ${a.min}…${a.max} (default ${a.defaultValue})`)).join(", ") || "—"}<br/>
+    <strong>Features:</strong> automatic ${autoFeatures.kernPairs + autoFeatures.groupPairs} kern rule(s), ${autoFeatures.ligatures} ligature(s), ${autoFeatures.markAttachments + autoFeatures.markToMark} mark rule(s); manual code in the Features tab overrides automatic pairs.</p>
     <p class="hint">Handbook ref: Font Info (p85), Masters (p88), Exports (p92). Exports use the active master. Variable-font axes and custom parameters are deferred.</p>`;
   bindChange(page.querySelector("#fiFamily"), (el) => { f.familyName = el.value; });
   bindChange(page.querySelector("#fiVersion"), (el) => { f.version = el.value; });
@@ -903,6 +919,16 @@ async function deliverBytes(filename: string, bytes: Uint8Array<ArrayBuffer>, mi
   return true;
 }
 
+/** Binary font exports are proofed by fontTools readback (Phase 8)
+ * before delivery; a failed proof blocks the export. */
+async function proofAndDeliver(filename: string, bytes: Uint8Array<ArrayBuffer>, mime: string, success: string): Promise<void> {
+  const proof = await proofExportBytes(bytes, COMPILE_SERVICE);
+  const gate = proofGate(proof, isDesktop());
+  if (!gate.deliver) { setStatus(`Export blocked: ${gate.note}`); return; }
+  if (!await deliverBytes(filename, bytes, mime)) { setStatus("Export cancelled."); return; }
+  setStatus(`${success} Proof: ${gate.note}.`);
+}
+
 async function saveGlyphs(): Promise<void> {
   const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
   if (!await deliverText(`${base}.glyphs`, fontToOpenStep(state.font), "text/plain")) { setStatus("Save cancelled."); return; }
@@ -975,33 +1001,28 @@ async function runExport(format: string): Promise<void> {
   const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
   try {
     if (format === "otf") {
-      if (!await deliverBytes(`${base}.otf`, new Uint8Array(fontToOtfArrayBuffer(state.font)), "font/otf")) { setStatus("Export cancelled."); return; }
-      setStatus("Exported OTF (CFF, active master).");
+      await proofAndDeliver(`${base}.otf`, new Uint8Array(fontToOtfArrayBuffer(state.font)), "font/otf", "Exported OTF (CFF, active master).");
       return;
     }
     if (format === "ttf") {
-      if (!await deliverBytes(`${base}.ttf`, fontToTtfBytes(state.font), "font/ttf")) { setStatus("Export cancelled."); return; }
-      setStatus("Exported TTF (glyf). Cubic curves were approximated by quadratics (tolerance 4 units).");
+      await proofAndDeliver(`${base}.ttf`, fontToTtfBytes(state.font), "font/ttf", "Exported TTF (glyf). Cubic curves were approximated by quadratics (tolerance 4 units).");
       return;
     }
     if (format === "woff") {
-      if (!await deliverBytes(`${base}.woff`, await fontToWoffBytes(fontToTtfBytes(state.font)), "font/woff")) { setStatus("Export cancelled."); return; }
-      setStatus("Exported WOFF (from the TTF build).");
+      await proofAndDeliver(`${base}.woff`, await fontToWoffBytes(fontToTtfBytes(state.font)), "font/woff", "Exported WOFF (from the TTF build).");
       return;
     }
     if (format === "woff2") {
       const res = await fetch(`${COMPILE_SERVICE}/compile/woff2`, { method: "POST", body: fontToTtfBytes(state.font) as BlobPart });
       if (!res.ok) throw new Error(`service HTTP ${res.status}: ${await res.text()}`);
-      if (!await deliverBytes(`${base}.woff2`, new Uint8Array(await res.arrayBuffer()), "font/woff2")) { setStatus("Export cancelled."); return; }
-      setStatus("Exported WOFF2 via the compile service.");
+      await proofAndDeliver(`${base}.woff2`, new Uint8Array(await res.arrayBuffer()), "font/woff2", "Exported WOFF2 via the compile service.");
       return;
     }
     if (format === "variable") {
       if (state.font.masters.length < 2) { setStatus("Variable export needs at least two masters — copy a layer to a new master in the Palette first."); return; }
       const res = await fetch(`${COMPILE_SERVICE}/compile/variable`, { method: "POST", body: fontToDesignspaceBundle(state.font) as BlobPart });
       if (!res.ok) throw new Error(`service HTTP ${res.status}: ${await res.text()}`);
-      if (!await deliverBytes(`${base}-Variable.ttf`, new Uint8Array(await res.arrayBuffer()), "font/ttf")) { setStatus("Export cancelled."); return; }
-      setStatus("Exported variable font via the compile service. Check the default instance against the Palette interpolation ghost.");
+      await proofAndDeliver(`${base}-Variable.ttf`, new Uint8Array(await res.arrayBuffer()), "font/ttf", "Exported variable font via the compile service. Check the default instance against the Palette interpolation ghost.");
       return;
     }
   } catch (err) {

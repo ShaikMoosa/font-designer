@@ -4,6 +4,7 @@ Endpoints (127.0.0.1:8765, CORS open for the local Vite app):
   GET  /health           -> {ok, fontTools, ufo2ft, brotli}
   POST /compile/woff2    body: SFNT bytes        -> WOFF2 bytes
   POST /compile/variable body: designspace bundle zip -> variable TTF bytes
+  POST /validate         body: font bytes -> fontTools readback report JSON
 
 Run: uv sync && uv run python server.py
 """
@@ -31,6 +32,41 @@ try:
     HAS_BROTLI = True
 except Exception:
     HAS_BROTLI = False
+
+
+def validate_font(font_bytes: bytes) -> dict:
+    """Read an exported font back with fontTools. Raises on any font
+    that does not parse, has no glyphs, or has an empty cmap."""
+    import hashlib
+
+    from fontTools.ttLib import TTFont
+
+    if not font_bytes:
+        raise RuntimeError("empty font bytes")
+    font = TTFont(io.BytesIO(font_bytes))
+    glyph_order = font.getGlyphOrder()
+    if len(glyph_order) < 1:
+        raise RuntimeError("font has no glyphs")
+    cmap = font["cmap"]
+    mappings = cmap.getBestCmap() or {}
+    if not mappings:
+        raise RuntimeError("font cmap has no mappings")
+    # Force the core tables to actually parse, not just list.
+    _ = font["head"].unitsPerEm
+    _ = font["maxp"].numGlyphs
+    _ = font["hmtx"]
+    name = font["name"].getDebugName(1) if "name" in font else None
+    return {
+        "ok": True,
+        "fontTools": FONTTOOLS_VERSION,
+        "flavor": font.flavor,
+        "sfntVersion": font.sfntVersion,
+        "glyphCount": len(glyph_order),
+        "cmapMappings": len(mappings),
+        "tables": sorted(font.keys()),
+        "familyName": name,
+        "sha256": hashlib.sha256(font_bytes).hexdigest(),
+    }
 
 
 def compile_woff2(sfnt_bytes: bytes) -> bytes:
@@ -141,7 +177,9 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
         try:
-            if self.path == "/compile/woff2":
+            if self.path == "/validate":
+                self._send(200, json.dumps(validate_font(body)).encode(), "application/json")
+            elif self.path == "/compile/woff2":
                 self._send(200, compile_woff2(body), "font/woff2")
             elif self.path == "/compile/variable":
                 self._send(200, compile_variable(body), "font/ttf")

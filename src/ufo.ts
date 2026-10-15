@@ -2,6 +2,7 @@
 // real interchange file without a native packager. GLIF points map:
 // line/curve/smooth keep their type; offcurve points omit `type`.
 import { DEFAULT_FEATURE_CODE, resolveGlyphContours } from "./model.ts";
+import { effectiveFeatureCode } from "./shaping.ts";
 import type { Anchor, Contour, Font, FontNode, Glyph } from "./model.ts";
 
 export interface ZipFile { name: string; data: string | Uint8Array }
@@ -211,6 +212,10 @@ export function buildUfoFiles(font: Font, masterId: string): ZipFile[] {
     data: `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n  <dict>\n${groupLines}\n  </dict>\n</plist>\n`,
   });
   files.push({
+    name: "features.fea",
+    data: effectiveFeatureCode(font),
+  });
+  files.push({
     name: "designspace.json",
     data: JSON.stringify({
       format: "glyphs-windows-designspace-manifest",
@@ -309,10 +314,11 @@ export function ufoMapToFont(map: Map<string, Uint8Array>, fileName?: string): F
       if (g.layers.masterRegular) { g.layers[masters[0].id] = g.layers.masterRegular; delete g.layers.masterRegular; }
     }
   }
+  const feaBytes = map.get("features.fea");
   return {
     familyName, version: "1.000", unitsPerEm, ascender, descender, capHeight, xHeight,
     masters, instances, glyphs, kerning, kerningGroups, axes,
-    featureCode: DEFAULT_FEATURE_CODE,
+    featureCode: feaBytes ? dec.decode(feaBytes) : DEFAULT_FEATURE_CODE,
     currentMasterId: masters[0].id, fileName: fileName || "Imported.ufo",
   };
 }

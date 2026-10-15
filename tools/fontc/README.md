@@ -15,5 +15,8 @@ uv run python server.py
 ```
 
 Listens on http://127.0.0.1:8765 (`GET /health`, `POST /compile/woff2`,
-`POST /compile/variable`). The app probes `/health` and reports the
-service as offline instead of failing when it is not running.
+`POST /compile/variable`, `POST /validate`). The app probes `/health`
+and reports the service as offline instead of failing when it is not
+running. Since Phase 8 every binary export is posted to `/validate`
+for a fontTools readback (glyph count, cmap, table list, SHA-256)
+before delivery; a failed readback blocks the export.
