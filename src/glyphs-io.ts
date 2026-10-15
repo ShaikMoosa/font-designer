@@ -109,6 +109,13 @@ function glyphsDoc(font: Font): Loose {
       rightKerningGroup: g.kerningGroupRight || undefined,
       leftMetricsKey: g.metricsKeyLeft || undefined,
       rightMetricsKey: g.metricsKeyRight || undefined,
+      backups: g.backups?.length ? g.backups.map((b) => ({
+        id: b.id, name: b.name, createdAt: b.createdAt, masterId: b.masterId,
+        paths: b.paths.map((c) => ({
+          closed: c.closed ? 1 : 0,
+          nodes: c.nodes.map((n) => `${n.x} ${n.y} ${n.type.toUpperCase()}`),
+        })),
+      })) : undefined,
       layers: Object.entries(g.layers).map(([layerId, layer]) => ({
         layerId,
         width: g.width,
@@ -255,6 +262,16 @@ export function glyphsJsonToFont(text: string, fileName?: string): Font {
         max: Number(p.max) || 0,
         defaultValue: Number(p.defaultValue) || 0,
         apply: (["scaleX", "scaleY", "x", "y"].includes(String(p.apply)) ? String(p.apply) : "scaleX") as SmartApply,
+      })) : undefined,
+      backups: Array.isArray(g.backups) ? (g.backups as Loose[]).map((b, bi) => ({
+        id: String(b.id || `backup-${bi}`),
+        name: String(b.name || `Backup ${bi + 1}`),
+        createdAt: String(b.createdAt || ""),
+        masterId: String(b.masterId || masters[0].id),
+        paths: ((b.paths || []) as Loose[]).map((c) => ({
+          closed: c.closed === 1 || c.closed === true || String(c.closed) === "1",
+          nodes: ((c.nodes || []) as unknown[]).map(parseNodeToken),
+        })),
       })) : undefined,
     };
   });

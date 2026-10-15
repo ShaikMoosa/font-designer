@@ -121,6 +121,17 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   readback blocks the export, and on desktop an unanswered bundled
   service blocks it too (the browser build delivers with an explicit
   no-proof warning instead).
+- **Phase 9 (Drawing depth II):** New pure geometry operations in
+  `pathsurgery.ts`: Add Extremes (true cubic extrema via de Casteljau
+  splits), Round Corners, Offset Curve (miter offset with collapse
+  detection; flattens curves), Re-segment (split every segment at its
+  midpoint), Fit Curve (Catmull-Rom cubics through polyline points),
+  duplicate-node detection/removal (including the closing seam), and
+  path cutting. The Palette exposes them as Filters with status
+  reporting and undo; Cut Path (toolbar/Edit menu) opens a closed path
+  at the selected node or splits an open one. Backup layers snapshot a
+  glyph's active-master outline, list/restore/delete from the Palette,
+  and round-trip through `.glyphs` JSON and OpenStep saves.
 
 ## Deferred (per Handbook)
 

@@ -1,6 +1,7 @@
 // SVG Edit View: pan/zoom, pen + select + hand tools, nodes/handles,
 // metrics and guides. Font coords are Y-up; screen coords are Y-down.
 import { contourToPathD, glyphBounds, resolveGlyphContours, pencilContour, measureBetween, alignPoints } from "./model.ts";
+import { cutContourAt } from "./pathsurgery.ts";
 import type { AlignMode, Bounds, Contour, Font, FontNode, Glyph, GlyphLayer, Measurement } from "./model.ts";
 
 const SVGNS = "http://www.w3.org/2000/svg";
@@ -42,6 +43,7 @@ export interface Editor {
   toggleGuides: () => boolean;
   toggleNodes: () => boolean;
   deleteSelected: () => void;
+  cutSelectedPath: () => void;
   closeActivePath: () => void;
   convertSelected: () => void;
   addContour: (contour: Contour) => void;
@@ -519,6 +521,26 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     hooks.onStatus?.(`Aligned ${nodes.length} nodes (${mode}).`);
   }
 
+  function cutSelectedPath(): void {
+    if (!state.selected) { hooks.onStatus?.("Select an on-curve node, then Cut path."); return; }
+    const lay = layer(); if (!lay) return;
+    const contour = lay.paths[state.selected.pathIdx];
+    if (!contour) return;
+    const node = contour.nodes[state.selected.nodeIdx];
+    if (!node || node.type === "offcurve") { hooks.onStatus?.("Handles cannot be cut — pick a white node."); return; }
+    const parts = cutContourAt(contour, state.selected.nodeIdx);
+    if (parts.length === 1 && parts[0] === contour) {
+      hooks.onStatus?.(contour.closed ? "Path could not be cut there." : "Endpoints do not cut — pick an interior node.");
+      return;
+    }
+    hooks.onBeginChange?.("Cut path");
+    lay.paths.splice(state.selected.pathIdx, 1, ...parts);
+    state.activePathIdx = state.selected.pathIdx;
+    setSelection({ pathIdx: state.selected.pathIdx, nodeIdx: 0 }, false);
+    hooks.onMutate?.(); hooks.onEndChange?.(); render();
+    hooks.onStatus?.(contour.closed ? "Path opened at the selected node." : `Path split into ${parts.length} paths at the selected node.`);
+  }
+
   function closeActivePath(): void {
     const contour = activeContour();
     if (!contour) { hooks.onStatus?.("No active path to close."); return; }
@@ -591,7 +613,7 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     },
     toggleGuides() { state.showGuides = !state.showGuides; render(); return state.showGuides; },
     toggleNodes() { state.showNodes = !state.showNodes; render(); return state.showNodes; },
-    deleteSelected, closeActivePath, convertSelected, addContour, nudgeSelected,
+    deleteSelected, cutSelectedPath, closeActivePath, convertSelected, addContour, nudgeSelected,
     getSelected: () => state.selected,
     setGhostD(d: string | null) { state.ghostD = d; render(); },
     setMasterOverride(masterId: string | null) { state.masterOverride = masterId; state.selected = null; state.selectionSet = []; render(); },

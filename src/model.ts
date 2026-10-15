@@ -6,6 +6,9 @@ export type NodeType = "line" | "curve" | "smooth" | "offcurve";
 export interface FontNode { x: number; y: number; type: NodeType }
 export interface Contour { closed: boolean; nodes: FontNode[] }
 export interface GlyphLayer { paths: Contour[] }
+export interface BackupLayer {
+  id: string; name: string; createdAt: string; masterId: string; paths: Contour[];
+}
 export interface Anchor { name: string; x: number; y: number }
 export interface ComponentRef { glyph: string; x: number; y: number; scaleX: number; scaleY: number; smart?: Record<string, number> }
 export type SmartApply = "scaleX" | "scaleY" | "x" | "y";
@@ -16,6 +19,41 @@ export interface Glyph {
   anchors: Anchor[]; layers: Record<string, GlyphLayer>;
   components: ComponentRef[]; metricsKeyLeft: string; metricsKeyRight: string;
   smartParams?: SmartParam[];
+  backups?: BackupLayer[];
+}
+
+export function cloneContours(paths: Contour[]): Contour[] {
+  return paths.map((c) => ({ closed: c.closed, nodes: c.nodes.map((n) => ({ ...n })) }));
+}
+
+/** Snapshot a glyph's layer for one master as a restorable backup. */
+export function snapshotLayer(glyph: Glyph, masterId: string, now = new Date()): BackupLayer | null {
+  const layer = glyph.layers[masterId];
+  if (!layer) return null;
+  const stamp = now.toISOString();
+  const backup: BackupLayer = {
+    id: `backup-${now.getTime().toString(36)}`,
+    name: `Backup ${stamp.slice(0, 19).replace("T", " ")}`,
+    createdAt: stamp,
+    masterId,
+    paths: cloneContours(layer.paths),
+  };
+  glyph.backups = [...(glyph.backups || []), backup];
+  return backup;
+}
+
+/** Replace a glyph's layer for the backup's master with the snapshot. */
+export function restoreBackup(glyph: Glyph, backupId: string): BackupLayer | null {
+  const backup = (glyph.backups || []).find((b) => b.id === backupId);
+  if (!backup) return null;
+  glyph.layers[backup.masterId] = { paths: cloneContours(backup.paths) };
+  return backup;
+}
+
+export function deleteBackup(glyph: Glyph, backupId: string): boolean {
+  const before = (glyph.backups || []).length;
+  glyph.backups = (glyph.backups || []).filter((b) => b.id !== backupId);
+  return glyph.backups.length !== before;
 }
 export interface FontMaster { id: string; name: string; weightValue: number; axisValues?: Record<string, number> }
 export interface FontInstance { name: string; masterId: string; active: boolean; axisValues?: Record<string, number> }

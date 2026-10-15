@@ -4,6 +4,7 @@ import {
   createDefaultFont, findGlyph, glyphToPathD, glyphToPathDResolved, glyphBounds, syncBearings,
   cloneFont, kernKey, rectContour, ellipseContour,
   compositeRecipe, interpolateGlyphAt, mastersCompatible, contoursToPathD,
+  deleteBackup, restoreBackup, snapshotLayer,
 } from "./model.ts";
 import type { AlignMode, Font, Glyph, GlyphLayer } from "./model.ts";
 import { fontToGlyphsJson, glyphsJsonToFont, fontToOpenStep, downloadText, downloadBytes } from "./glyphs-io.ts";
@@ -14,7 +15,7 @@ import { fontToWoffBytes } from "./woff.ts";
 import { validateFont } from "./validate.ts";
 import { effectiveFeatures, generateFeatures, parseFeatureCode, shapeText } from "./shaping.ts";
 import { proofExportBytes, proofGate } from "./proofing.ts";
-import { fixContourDirections, unionContours, differenceContours } from "./pathsurgery.ts";
+import { addExtremes, findDuplicateNodes, fitCurveContours, fixContourDirections, offsetContours, removeDuplicateNodes, resegmentContours, roundCorners, unionContours, differenceContours } from "./pathsurgery.ts";
 import { base64ToBytes, desktopOpenFile, desktopSaveBytes, desktopSaveText, fileKindForName, isDesktop, onDesktopMenuCommand } from "./desktop.ts";
 
 const COMPILE_SERVICE = "http://127.0.0.1:8765";
@@ -538,7 +539,17 @@ function renderPalette(g: Glyph): void {
     </div>
     <div class="field"><button id="palUnion" type="button">Remove overlaps (union, flattens curves)</button></div>
     <div class="field"><button id="palSubtract" type="button">Subtract overlaps (first contour minus the rest, flattens curves)</button></div>
-    <p class="hint">Handbook ref: Palette (p54), Transformations (p56), Interpolation (p150). Interpolation needs compatible masters (same contour/node order). Union flattens curves to lines — undo is available.</p>`;
+    <div class="field"><label>Filters (Phase 9)</label>
+      <div class="field-row"><button id="palExtremes" type="button">Add extremes</button><button id="palFitCurve" type="button">Fit curve</button></div>
+      <div class="field-row"><button id="palRound" type="button">Round corners…</button><button id="palOffset" type="button">Offset curve…</button></div>
+      <div class="field-row"><button id="palResegment" type="button">Re-segment (split at midpoints)</button><button id="palDupes" type="button">Remove duplicate nodes</button></div>
+      <span id="palDupeReport" class="hint"></span>
+    </div>
+    <div class="field"><label>Backup layers (this glyph, active master)</label>
+      <div class="field-row"><button id="palBackup" type="button">+ Backup layer</button></div>
+      <div id="backupList"></div>
+    </div>
+    <p class="hint">Handbook ref: Palette (p54), Transformations (p56), Interpolation (p150), Filters, Layers. Interpolation needs compatible masters (same contour/node order). Union and Offset flatten curves to lines — undo is available. Use Cut path in the toolbar to open/split a path at the selected node.</p>`;
   qs<HTMLButtonElement>(page, "#palApply").addEventListener("click", () => {
     pushUndo();
     const dx = +qs<HTMLInputElement>(page, "#palDx").value || 0;
@@ -625,6 +636,67 @@ function renderPalette(g: Glyph): void {
     setStatus(`Subtract: ${before} → ${layer.paths.length} contour(s). Curves were flattened — Ctrl+Z restores them.`);
   });
   qs<HTMLButtonElement>(page, "#palCopyLayer").addEventListener("click", () => { addMasterCopy(); });
+  const applyOp = (label: string, op: (paths: GlyphLayer["paths"]) => { contours: GlyphLayer["paths"]; changed: number }): void => {
+    const layer = layerOf(g);
+    const result = op(layer.paths);
+    if (!result.changed) { setStatus(`${label}: nothing to change on this layer.`); return; }
+    pushUndo();
+    layer.paths = result.contours;
+    syncBearings(state.font, g);
+    editor.refresh(state.font, g); renderAll();
+    setStatus(`${label}: ${result.changed} change(s) — Ctrl+Z restores the previous outline.`);
+  };
+  qs<HTMLButtonElement>(page, "#palExtremes").addEventListener("click", () => applyOp("Add extremes", (p) => addExtremes(p)));
+  qs<HTMLButtonElement>(page, "#palFitCurve").addEventListener("click", () => applyOp("Fit curve", (p) => fitCurveContours(p)));
+  qs<HTMLButtonElement>(page, "#palResegment").addEventListener("click", () => applyOp("Re-segment", (p) => resegmentContours(p)));
+  qs<HTMLButtonElement>(page, "#palRound").addEventListener("click", () => {
+    const raw = prompt("Corner radius in font units:", "30");
+    if (raw == null) return;
+    const radius = parseFloat(raw);
+    if (!Number.isFinite(radius) || radius <= 0) { setStatus("Round corners needs a positive radius."); return; }
+    applyOp(`Round corners (r=${radius})`, (p) => roundCorners(p, radius));
+  });
+  qs<HTMLButtonElement>(page, "#palOffset").addEventListener("click", () => {
+    const raw = prompt("Offset distance in font units (positive expands, negative shrinks):", "20");
+    if (raw == null) return;
+    const distance = parseFloat(raw);
+    if (!Number.isFinite(distance) || distance === 0) { setStatus("Offset needs a non-zero distance."); return; }
+    applyOp(`Offset curve (${distance})`, (p) => offsetContours(p, distance));
+  });
+  const dupeReport = qs<HTMLElement>(page, "#palDupeReport");
+  const dupesNow = findDuplicateNodes(layerOf(g).paths);
+  dupeReport.textContent = dupesNow.length ? `${dupesNow.length} duplicate node(s) on this layer.` : "No duplicate nodes on this layer.";
+  qs<HTMLButtonElement>(page, "#palDupes").addEventListener("click", () => applyOp("Remove duplicate nodes", (p) => removeDuplicateNodes(p)));
+  const backupList = qs<HTMLElement>(page, "#backupList");
+  const backups = (g.backups || []).filter((bk) => bk.masterId === state.font.currentMasterId);
+  backupList.innerHTML = backups.length
+    ? backups.map((bk) => `<div class="field-row"><span>${escHtml(bk.name)} (${bk.paths.length} contour(s))</span><button data-backup-restore="${escHtml(bk.id)}" type="button">Restore</button><button data-backup-del="${escHtml(bk.id)}" type="button">Delete</button></div>`).join("")
+    : '<span class="hint">No backups for the active master yet.</span>';
+  backupList.querySelectorAll<HTMLButtonElement>("[data-backup-restore]").forEach((btn) => btn.addEventListener("click", () => {
+    const id = btn.dataset.backupRestore;
+    if (!id) return;
+    pushUndo();
+    const restored = restoreBackup(g, id);
+    if (!restored) { setStatus("Backup not found."); return; }
+    syncBearings(state.font, g);
+    editor.refresh(state.font, g); renderAll();
+    setStatus(`Restored backup ${restored.name} — Ctrl+Z returns to the pre-restore outline.`);
+  }));
+  backupList.querySelectorAll<HTMLButtonElement>("[data-backup-del]").forEach((btn) => btn.addEventListener("click", () => {
+    const id = btn.dataset.backupDel;
+    if (!id) return;
+    pushUndo();
+    deleteBackup(g, id);
+    renderAll();
+    setStatus("Backup deleted.");
+  }));
+  qs<HTMLButtonElement>(page, "#palBackup").addEventListener("click", () => {
+    pushUndo();
+    const backup = snapshotLayer(g, state.font.currentMasterId);
+    if (!backup) { setStatus("No layer to back up for the active master."); return; }
+    renderAll();
+    setStatus(`Backup layer saved: ${backup.name}. Restore it any time from the Palette.`);
+  });
 }
 
 function renderKerning(): void {
@@ -1048,6 +1120,7 @@ function dispatch(cmd: string): void {
     case "redo": redo(); break;
     case "delete-sel": activeEd.deleteSelected(); break;
     case "close-path": activeEd.closeActivePath(); break;
+    case "cut-path": activeEd.cutSelectedPath(); break;
     case "convert": activeEd.convertSelected(); break;
     case "zoom-in": activeEd.zoomBy(1.25); break;
     case "zoom-out": activeEd.zoomBy(1 / 1.25); break;
@@ -1101,6 +1174,7 @@ document.querySelectorAll<HTMLButtonElement>("[data-align]").forEach((b) => b.ad
 $("#rectBtn").addEventListener("click", () => dispatch("add-rect"));
 $("#ellipseBtn").addEventListener("click", () => dispatch("add-ellipse"));
 $("#closePathBtn").addEventListener("click", () => dispatch("close-path"));
+$("#cutPathBtn").addEventListener("click", () => dispatch("cut-path"));
 $("#convertBtn").addEventListener("click", () => dispatch("convert"));
 $("#deleteBtn").addEventListener("click", () => dispatch("delete-sel"));
 $("#undoBtn").addEventListener("click", () => dispatch("undo"));
