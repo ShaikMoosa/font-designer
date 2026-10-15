@@ -923,19 +923,28 @@ async function exportUfo(): Promise<void> {
   setStatus("Exported UFO as .ufo.zip — unzip to get the .ufo folder for FontForge/fontTools.");
 }
 async function probeCompileService(statusEl: HTMLElement): Promise<boolean> {
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 900);
-    const res = await fetch(`${COMPILE_SERVICE}/health`, { signal: ctrl.signal });
-    clearTimeout(timer);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const info = (await res.json()) as { fontTools?: string; brotli?: boolean };
-    statusEl.textContent = `Compile service: online (fontTools ${info.fontTools ?? "?"}, brotli ${info.brotli ? "yes" : "no"}). WOFF2/variable enabled.`;
-    return true;
-  } catch {
-    statusEl.textContent = "Compile service: offline. Browser formats (OTF/TTF/WOFF) still work; start tools/fontc for WOFF2/variable.";
-    return false;
+  // The desktop shell starts the bundled fontc sidecar automatically;
+  // a packaged sidecar can take a few seconds to unpack and listen, so
+  // the desktop probe retries before declaring the service offline.
+  const attempts = isDesktop() ? 8 : 1;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 900);
+      const res = await fetch(`${COMPILE_SERVICE}/health`, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const info = (await res.json()) as { fontTools?: string; brotli?: boolean };
+      statusEl.textContent = `Compile service: online (fontTools ${info.fontTools ?? "?"}, brotli ${info.brotli ? "yes" : "no"}). WOFF2/variable enabled.`;
+      return true;
+    } catch {
+      if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
   }
+  statusEl.textContent = isDesktop()
+    ? "Compile service: offline. Browser formats (OTF/TTF/WOFF) still work; the bundled service did not answer — restart the app to retry."
+    : "Compile service: offline. Browser formats (OTF/TTF/WOFF) still work; start tools/fontc for WOFF2/variable.";
+  return false;
 }
 
 function renderExport(): void {

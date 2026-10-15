@@ -49,6 +49,38 @@ test("packaging ships an Electron shell with NSIS and portable Windows builds", 
   assert.ok(pkg.build.files.includes("electron/**"));
 });
 
+test("packaging bundles the fontc sidecar and app icon into Windows builds", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    scripts: Record<string, string>;
+    build: {
+      win: { icon?: string };
+      extraResources: Array<{ from: string; to: string; filter: string[] }>;
+    };
+  };
+  assert.match(pkg.scripts["build:fontc"], /PyInstaller/);
+  assert.match(pkg.scripts["build:fontc"], /server\.py/);
+  assert.match(pkg.scripts["dist:win"], /build:fontc/);
+  assert.match(pkg.scripts["dist:win"], /build:icon/);
+  assert.equal(pkg.build.win.icon, "build/icon.ico");
+  assert.deepEqual(pkg.build.extraResources, [
+    { from: "resources/fontc/fontc", to: "fontc", filter: ["**/*"] },
+  ]);
+  const iconGen = readFileSync(new URL("../tools/generate_icon.py", import.meta.url), "utf8");
+  assert.match(iconGen, /icon\.ico/);
+  assert.match(iconGen, /0xE8, 0xA3, 0x3D/);
+});
+
+test("Electron shell auto-starts and stops the bundled compile service", () => {
+  const main = readFileSync(new URL("../electron/main.cjs", import.meta.url), "utf8");
+  assert.match(main, /function startFontc/);
+  assert.match(main, /resourcesPath, "fontc", "fontc\.exe"/);
+  assert.match(main, /GLYPHS_FONTC/);
+  assert.match(main, /startFontc\(\);/);
+  assert.match(main, /before-quit", stopFontc/);
+  const renderer = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  assert.match(renderer, /attempts = isDesktop\(\) \? 8 : 1/);
+});
+
 test("Electron shell uses native dialogs behind a secure preload bridge", () => {
   const main = readFileSync(new URL("../electron/main.cjs", import.meta.url), "utf8");
   const preload = readFileSync(new URL("../electron/preload.cjs", import.meta.url), "utf8");

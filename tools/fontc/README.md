@@ -1,7 +1,13 @@
-# fontc — local compile service (optional)
+# fontc — local compile service
 
-Powers WOFF2 and variable-font export for the web app. Browser formats
-(OTF/TTF/WOFF) work without it.
+Powers WOFF2 and variable-font export. Browser formats (OTF/TTF/WOFF)
+work without it. Since Phase 7 the Windows desktop app bundles this
+service as a sidecar (`fontc.exe`, built with PyInstaller via
+`npm run build:fontc`) and starts it automatically on launch, so
+desktop users do not run anything by hand. Set `GLYPHS_FONTC=off`
+to disable the sidecar, or `GLYPHS_FONTC_PATH` to a custom executable.
+
+For browser development, run it manually:
 
 ```powershell
 uv sync

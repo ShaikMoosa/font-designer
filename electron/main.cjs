@@ -6,9 +6,63 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs/promises");
+const fsSync = require("node:fs");
+const { spawn } = require("node:child_process");
 
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
+const FONTC_PORT = 8765;
 let mainWindow = null;
+let fontcProcess = null;
+
+// --- Bundled compile service (Phase 7) ---
+// The fontc sidecar (tools/fontc/server.py, packaged with PyInstaller
+// in --onedir mode so stopping it cannot orphan a child process) powers
+// WOFF2 and variable-font export on 127.0.0.1:8765. In a packaged app it
+// lives in resources/fontc/fontc.exe; in development that exe is used
+// when built, otherwise the service runs from tools/fontc via uv.
+// Set GLYPHS_FONTC=off to disable, or GLYPHS_FONTC_PATH to a custom exe.
+// If the port is already served (a manually started service), the
+// sidecar exits on bind and the existing service keeps answering.
+function fontcExecutable() {
+  if (process.env.GLYPHS_FONTC_PATH) return process.env.GLYPHS_FONTC_PATH;
+  if (app.isPackaged) return path.join(process.resourcesPath, "fontc", "fontc.exe");
+  return path.join(__dirname, "..", "resources", "fontc", "fontc", "fontc.exe");
+}
+
+function startFontc() {
+  if (process.env.GLYPHS_FONTC === "off" || fontcProcess) return;
+  const exe = fontcExecutable();
+  try {
+    if (fsSync.existsSync(exe)) {
+      fontcProcess = spawn(exe, [], { windowsHide: true, cwd: path.dirname(exe) });
+    } else if (!app.isPackaged) {
+      const serviceDir = path.join(__dirname, "..", "tools", "fontc");
+      fontcProcess = spawn("uv", ["run", "python", "server.py"], { windowsHide: true, cwd: serviceDir });
+    } else {
+      console.error(`fontc sidecar missing at ${exe}; WOFF2/variable export will report the service offline.`);
+      return;
+    }
+  } catch (err) {
+    console.error(`fontc sidecar failed to start: ${err.message}`);
+    fontcProcess = null;
+    return;
+  }
+  fontcProcess.on("error", (err) => {
+    console.error(`fontc sidecar error: ${err.message}`);
+    fontcProcess = null;
+  });
+  fontcProcess.on("exit", (code) => {
+    if (code) console.error(`fontc sidecar exited with code ${code} (port ${FONTC_PORT} may already be served).`);
+    fontcProcess = null;
+  });
+}
+
+function stopFontc() {
+  if (fontcProcess) {
+    fontcProcess.kill();
+    fontcProcess = null;
+  }
+}
 
 if (process.platform === "win32") {
   app.setAppUserModelId("com.shaikmoosa.glyphsforwindows");
@@ -122,12 +176,14 @@ function registerIpc() {
 }
 
 function createWindow() {
+  const iconPath = path.join(__dirname, "..", "build", "icon.ico");
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 1024,
     minHeight: 640,
     title: "Glyphs for Windows",
+    ...(fsSync.existsSync(iconPath) ? { icon: iconPath } : {}),
     backgroundColor: "#14181d",
     show: false,
     webPreferences: {
@@ -161,6 +217,7 @@ if (!hasLock) {
   app.whenReady().then(() => {
     buildMenu();
     registerIpc();
+    startFontc();
     createWindow();
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -169,4 +226,5 @@ if (!hasLock) {
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
   });
+  app.on("before-quit", stopFontc);
 }

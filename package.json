@@ -12,8 +12,10 @@
     "test": "node --test test/model.test.ts test/desktop.test.ts",
     "typecheck": "tsc --noEmit",
     "desktop": "npm run build && electron .",
-    "pack:win": "npm run build && electron-builder --win --dir",
-    "dist:win": "npm run build && electron-builder --win nsis portable"
+    "build:icon": "python tools/generate_icon.py",
+    "build:fontc": "cd tools/fontc && uv run --with pyinstaller python -m PyInstaller --onedir --name fontc --distpath ../../resources/fontc --workpath ../../build/fontc-work --specpath ../../build --noconfirm --clean server.py",
+    "pack:win": "npm run build && npm run build:icon && npm run build:fontc && electron-builder --win --dir",
+    "dist:win": "npm run build && npm run build:icon && npm run build:fontc && electron-builder --win nsis portable"
   },
   "dependencies": {
     "opentype.js": "^1.3.4",
@@ -37,7 +39,17 @@
       "electron/**",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "resources/fontc/fontc",
+        "to": "fontc",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
