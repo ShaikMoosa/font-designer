@@ -42,7 +42,7 @@ const state: AppState = {
   fontViewMode: "grid",
   splitView: false, paneBMasterId: "",
   workspace: "edit",
-  fontCategory: "All", fontLanguage: "All", cellSize: 88,
+  fontCategory: "All", fontLanguage: "All", cellSize: 112,
 };
 
 function setWorkspace(mode: "edit" | "font"): void {
@@ -150,8 +150,8 @@ function drawThumb(canvas: HTMLCanvasElement, glyph: Glyph): void {
   ctx.fillStyle = "#26262c"; // Light theme: dark glyph previews.
   const d = glyphToPathDResolved(state.font, glyph, state.font.currentMasterId);
   if (!d) {
-    ctx.font = "11px Segoe UI"; ctx.fillStyle = "#8a8a94";
-    ctx.fillText(glyph.name === "space" ? "space" : "empty", 8, h / 2);
+    ctx.font = "11px Segoe UI"; ctx.fillStyle = "#8a8a94"; ctx.textAlign = "center";
+    ctx.fillText(glyph.name === "space" ? "space" : "empty", w / 2, h / 2);
     return;
   }
   const upm = state.font.unitsPerEm || 1000;
@@ -169,16 +169,15 @@ function renderNavList(el: HTMLElement, label: string, items: Array<{ name: stri
   el.innerHTML = "";
   const all = document.createElement("button");
   all.type = "button";
-  all.className = `fv-nav-item${active === "All" ? " is-on" : ""}`;
+  all.className = `fv-nav-item fv-nav-all${active === "All" ? " is-on" : ""}`;
   all.textContent = label;
   all.addEventListener("click", () => onPick("All"));
   el.appendChild(all);
   for (const item of items) {
-    if (!item.count) continue;
     const b = document.createElement("button");
     b.type = "button";
     b.className = `fv-nav-item${active === item.name ? " is-on" : ""}`;
-    b.innerHTML = `<span>${escHtml(item.name)}</span><span class="fv-nav-count">${item.count}</span>`;
+    b.innerHTML = `<span class="fv-nav-chev" aria-hidden="true">›</span><span class="fv-nav-letter" aria-hidden="true">${escHtml(item.name.charAt(0))}</span><span class="fv-nav-name">${escHtml(item.name)}</span><span class="fv-nav-count">${item.count}</span>`;
     b.addEventListener("click", () => onPick(item.name));
     el.appendChild(b);
   }
@@ -194,15 +193,17 @@ function renderGlyphDetails(): void {
     const nodes = layer ? layer.paths.reduce((n, c) => n + c.nodes.length, 0) : 0;
     return `${m.name}: ${layer ? layer.paths.length : 0} contour(s), ${nodes} node(s)`;
   }).join("<br/>");
+  const glyphChar = g.name === "space" ? "space"
+    : (g.unicode != null && g.unicode >= 0x21 && g.unicode <= 0x10ffff ? String.fromCodePoint(g.unicode) : g.name.charAt(0));
   page.innerHTML = `
+    <div class="fv-detail-glyph" aria-hidden="true">${escHtml(glyphChar)}</div>
     <div class="fv-detail-name">${escHtml(g.name)}</div>
+    <div class="fv-bearings"><span>LSB ${g.lsb}</span><strong>${g.width}</strong><span>RSB ${g.rsb}</span></div>
     <div class="fv-detail-grid">
-      <span>Unicode</span><strong>${uni}</strong>
+      <span>Unicode</span><strong><span class="fv-uni-chip">${uni}</span></strong>
       <span>Category</span><strong>${escHtml(categoryForGlyph(g))}</strong>
       <span>Script</span><strong>${escHtml(scriptForGlyph(g))}</strong>
-      <span>Width</span><strong>${g.width}</strong>
-      <span>Bearings</span><strong>LSB ${g.lsb} · RSB ${g.rsb}</strong>
-      <span>Kerning groups</span><strong>L ${escHtml(g.kerningGroupLeft || "(empty)")} · R ${escHtml(g.kerningGroupRight || "(empty)")}</strong>
+      <span>Kerning groups</span><strong>L ${escHtml(g.kerningGroupLeft || "—")} · R ${escHtml(g.kerningGroupRight || "—")}</strong>
       <span>Components</span><strong>${(g.components || []).length}</strong>
       <span>Backups</span><strong>${(g.backups || []).length}</strong>
     </div>
@@ -275,7 +276,7 @@ function renderFontView() {
       cell.appendChild(canvas);
       const nm = document.createElement("div"); nm.className = "gname"; nm.textContent = g.name; cell.appendChild(nm);
       const un = document.createElement("div"); un.className = "guni";
-      un.textContent = g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")} · ${g.width}` : `— · ${g.width}`;
+      un.textContent = g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")}` : "—";
       cell.appendChild(un);
       cell.addEventListener("click", () => openGlyph(g.name, false));
       cell.addEventListener("dblclick", () => { setWorkspace("edit"); openGlyph(g.name, true); });
