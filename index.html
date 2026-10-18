@@ -18,7 +18,7 @@
             <button data-cmd="undo" type="button">Undo <kbd>Ctrl+Z</kbd></button><button data-cmd="redo" type="button">Redo <kbd>Ctrl+Y</kbd></button><div class="menu-rule"></div><button data-cmd="delete-sel" type="button">Delete Selection <kbd>Del</kbd></button><button data-cmd="close-path" type="button">Close Path</button><button data-cmd="cut-path" type="button">Cut Path at Node</button><button data-cmd="convert" type="button">Convert Node</button>
           </div></div>
           <div class="menu"><button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">View</button><div class="menu-drop">
-            <button data-cmd="zoom-in" type="button">Zoom In <kbd>Ctrl++</kbd></button><button data-cmd="zoom-out" type="button">Zoom Out <kbd>Ctrl+-</kbd></button><button data-cmd="zoom-fit" type="button">Zoom to Fit <kbd>Ctrl+0</kbd></button><div class="menu-rule"></div><button data-cmd="toggle-guides" type="button">Toggle Guides</button><button data-cmd="toggle-nodes" type="button">Toggle Nodes</button><div class="menu-rule"></div><button data-cmd="toggle-navigator" type="button">Toggle Navigator</button><button data-cmd="toggle-inspector" type="button">Toggle Inspector</button><button data-cmd="toggle-preview" type="button">Toggle Preview</button><button data-cmd="reset-layout" type="button">Reset Workspace Layout <kbd>Ctrl+Alt+0</kbd></button>
+            <button data-cmd="zoom-in" type="button">Zoom In <kbd>Ctrl++</kbd></button><button data-cmd="zoom-out" type="button">Zoom Out <kbd>Ctrl+-</kbd></button><button data-cmd="zoom-fit" type="button">Zoom to Fit <kbd>Ctrl+0</kbd></button><div class="menu-rule"></div><button data-cmd="toggle-guides" type="button">Toggle Guides</button><button data-cmd="toggle-nodes" type="button">Toggle Nodes</button><div class="menu-rule"></div><button data-cmd="toggle-navigator" type="button">Toggle Navigator</button><button data-cmd="shortcuts" type="button">Keyboard Shortcuts <kbd>?</kbd></button><button data-cmd="toggle-inspector" type="button">Toggle Inspector</button><button data-cmd="toggle-preview" type="button">Toggle Preview</button><button data-cmd="reset-layout" type="button">Reset Workspace Layout <kbd>Ctrl+Alt+0</kbd></button>
           </div></div>
           <div class="menu"><button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">Glyph</button><div class="menu-drop">
             <button data-cmd="add-glyph" type="button">Add Glyph…</button><button data-cmd="create-composite" type="button">Create Composite…</button><button data-cmd="add-rect" type="button">Add Rectangle</button><button data-cmd="add-ellipse" type="button">Add Ellipse</button>
@@ -81,6 +81,7 @@
               <div class="toolbar-more-section toolbar-more-layout"><span class="tool-menu-label">Workspace</span><button data-cmd="reset-layout" type="button">Reset workspace layout</button></div>
             </div></details>
           </div>
+          <section id="mastersBar" aria-label="Masters, interpolation and proofing"></section>
           <div id="editStage">
             <div id="canvasStage">
               <div id="canvasWrap"><div id="panes"><svg id="editorSvg" class="is-active-pane" role="application" aria-label="Glyph outline editor" tabindex="0"></svg><svg id="editorSvgB" role="application" aria-label="Glyph outline editor, second master" tabindex="0" hidden></svg></div><div id="canvasHud" aria-label="Editing mode, glyph and zoom navigation"><output id="canvasModeLabel" class="canvas-mode-label" aria-live="polite">Edit · Select</output><span class="hud-divider" aria-hidden="true"></span><div class="hud-group" role="group" aria-label="Glyph navigation"><button id="previousGlyphBtn" class="hud-button" type="button" title="Previous glyph (Alt+Left)" aria-label="Previous glyph"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m9.5 4-4 4 4 4"/></svg></button><output id="canvasGlyphLabel" aria-live="polite">A</output><button id="nextGlyphBtn" class="hud-button" type="button" title="Next glyph (Alt+Right)" aria-label="Next glyph"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6.5 4 4 4-4 4"/></svg></button></div><span class="hud-divider" aria-hidden="true"></span><div class="hud-group" role="group" aria-label="Canvas zoom"><button id="zoomOutBtn" class="hud-button" type="button" title="Zoom out (Ctrl+-)" aria-label="Zoom out"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8"/></svg></button><output id="zoomReadout" aria-live="polite">100%</output><button id="zoomInBtn" class="hud-button" type="button" title="Zoom in (Ctrl++)" aria-label="Zoom in"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8M8 4v8"/></svg></button><button id="zoomFitBtn" class="hud-fit" type="button" title="Zoom to fit (Ctrl+0)">Fit</button></div></div><div id="coordReadout" class="coord">0, 0</div></div>
@@ -119,6 +120,22 @@
           <div class="workflow-pages"><section id="side-fontinfo" class="workflow-page is-on"></section><section id="side-features" class="workflow-page"></section><section id="side-export" class="workflow-page"></section></div>
         </div>
       </dialog>
+      <dialog id="shortcutsDialog" aria-labelledby="shortcutsDialogTitle">
+        <div class="workflow-dialog-shell">
+          <header class="workflow-dialog-header">
+            <div><strong id="shortcutsDialogTitle">Keyboard shortcuts</strong><span>Windows conventions · press ? any time</span></div>
+            <button id="closeShortcutsDialog" class="icon-btn" type="button" aria-label="Close shortcuts" title="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg></button>
+          </header>
+          <div class="shortcuts-body">
+            <div><h3>Document</h3><p><kbd>Ctrl+N</kbd> New · <kbd>Ctrl+O</kbd> Open · <kbd>Ctrl+S</kbd> Save .glyphs · <kbd>Ctrl+E</kbd> Export UFO</p></div>
+            <div><h3>Editing</h3><p><kbd>Ctrl+Z</kbd> Undo · <kbd>Ctrl+Y</kbd> Redo · <kbd>Del</kbd> Delete nodes · Arrows nudge (Shift ×10)</p></div>
+            <div><h3>Tools</h3><p><kbd>V</kbd> Select · <kbd>P</kbd> Pen · <kbd>B</kbd> Pencil · <kbd>M</kbd> Measure · <kbd>H</kbd> Hand · <kbd>T</kbd> Text · Space temporary pan</p></div>
+            <div><h3>Canvas</h3><p><kbd>Ctrl++</kbd>/<kbd>Ctrl+-</kbd> Zoom · <kbd>Ctrl+0</kbd> Fit · <kbd>Alt+←</kbd>/<kbd>Alt+→</kbd> Prev/next glyph</p></div>
+            <div><h3>Masters (R5)</h3><p><kbd>[</kbd> / <kbd>]</kbd> Prev/next master · <kbd>,</kbd> / <kbd>.</kbd> Scrub axis · <kbd>Esc</kbd> Close menus</p></div>
+          </div>
+        </div>
+      </dialog>
+      <div id="contextMenu" class="context-menu" role="menu" hidden></div>
       <footer id="statusbar"><span id="statusMsg">Ready — draw, space, kern, and proof your font.</span><span id="statusRight" class="muted"></span></footer>
     </div>
     <script type="module" src="/src/main.ts"></script>

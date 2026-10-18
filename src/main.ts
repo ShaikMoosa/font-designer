@@ -10,6 +10,7 @@ import {
   updateGlyphSelection, glyphHasOutline,
   editNavigatorGlyphs, resolveKern,
   compatibilityReport, copyLayerBetweenMasters, instanceT, instanceAxisWeight, cloneContours,
+  sortedMasters, axisRange, weightForT, axisStopsForGlyph, issuesForGlyph, adjacentMaster, instanceProgression, layerSummaries,
 } from "./model.ts";
 import type { EditNavigatorScope, GlyphFilter, GlyphSortMode } from "./model.ts";
 import { glyphInfoFor, glyphSuggestionFor, productionNameFor, COLOR_LABELS } from "./glyphinfo.ts";
@@ -27,7 +28,7 @@ import { base64ToBytes, desktopOpenFile, desktopSaveBytes, desktopSaveText, file
 
 const COMPILE_SERVICE = "http://127.0.0.1:8765";
 import { createEditor } from "./editor.ts";
-import type { Editor, EditorHooks, MeasureInfo, Tool } from "./editor.ts";
+import type { Editor, EditorHooks, GhostLayer, MeasureInfo, Tool } from "./editor.ts";
 
 function $<T extends Element>(sel: string): T { return document.querySelector(sel) as T; }
 function qs<T extends HTMLElement>(root: ParentNode, sel: string): T { return root.querySelector(sel) as T; }
@@ -44,7 +45,13 @@ interface AppState {
   activeSavedFilterId: string;
   editNavScope: EditNavigatorScope;
   editMode: "edit" | "text";
+  compareMode: CompareMode;
+  ghostOpacity: number;
+  axisT: number;
+  proofInterpolated: boolean;
 }
+
+type CompareMode = "off" | "overlay" | "split";
 
 interface SavedFontFilter {
   id: string;
@@ -208,7 +215,38 @@ const state: AppState = {
   activeSavedFilterId: "",
   editNavScope: workspacePrefs.editNavScope,
   editMode: "edit",
+  compareMode: "off",
+  ghostOpacity: 0.55,
+  axisT: 0.5,
+  proofInterpolated: false,
 };
+
+const MASTERS_PREFS_KEY = "glyphs-windows.masters.v1";
+function loadMastersPrefs(): { compareMode: CompareMode; ghostOpacity: number } {
+  try {
+    const raw = localStorage.getItem(MASTERS_PREFS_KEY);
+    if (!raw) return { compareMode: "off", ghostOpacity: 0.55 };
+    const stored = JSON.parse(raw) as { compareMode?: string; ghostOpacity?: number };
+    const mode: CompareMode = stored.compareMode === "overlay" || stored.compareMode === "split" ? stored.compareMode : "off";
+    const opacity = typeof stored.ghostOpacity === "number" ? Math.max(0.1, Math.min(1, stored.ghostOpacity)) : 0.55;
+    return { compareMode: mode, ghostOpacity: opacity };
+  } catch {
+    return { compareMode: "off", ghostOpacity: 0.55 };
+  }
+}
+function persistMastersPrefs(): void {
+  try {
+    localStorage.setItem(MASTERS_PREFS_KEY, JSON.stringify({ compareMode: state.compareMode, ghostOpacity: state.ghostOpacity }));
+  } catch {
+    // Masters bar remains usable without persistence.
+  }
+}
+{
+  const mastersPrefs = loadMastersPrefs();
+  state.compareMode = mastersPrefs.compareMode;
+  state.ghostOpacity = mastersPrefs.ghostOpacity;
+  if (state.compareMode === "split") state.splitView = true;
+}
 
 function persistFontViewPrefs(): void {
   try {
@@ -360,6 +398,229 @@ function refreshPaneB(refit = false): void {
   if (!state.splitView) return;
   if (refit) editorB.setGlyph(state.font, currentGlyph());
   else editorB.refresh(state.font, currentGlyph());
+}
+
+function interpolatedPathD(glyph: Glyph, t: number): string {
+  const ig = interpolateGlyphAt(state.font, glyph.name, t);
+  if (!ig) return "";
+  return contoursToPathD(ig.layers[state.font.currentMasterId]?.paths ?? []);
+}
+
+/** Ghost outlines for the current compare mode; hidden masters never ghost. */
+function comparisonGhosts(): GhostLayer[] {
+  const glyph = currentGlyph();
+  if (!glyph || state.font.masters.length < 2) return [];
+  const ghosts: GhostLayer[] = [];
+  if (state.compareMode === "overlay") {
+    for (const master of sortedMasters(state.font)) {
+      if (master.id === state.font.currentMasterId || paletteHiddenMasters.has(master.id)) continue;
+      const d = glyphToPathDResolved(state.font, glyph, master.id);
+      if (d) ghosts.push({ d, kind: "master" });
+    }
+  }
+  const interpD = interpolatedPathD(glyph, state.axisT);
+  if (interpD) ghosts.push({ d: interpD, kind: "interp" });
+  return ghosts;
+}
+
+function updateComparisonGhosts(): void {
+  const ghosts = comparisonGhosts();
+  editor.setGhostLayers(ghosts, state.ghostOpacity);
+  editorB.setGhostLayers(state.compareMode === "split" ? ghosts.filter((g) => g.kind === "interp") : [], state.ghostOpacity);
+}
+
+function setCompareMode(mode: CompareMode, announce = true): void {
+  state.compareMode = mode;
+  state.splitView = mode === "split";
+  persistMastersPrefs();
+  renderHeader();
+  if (state.splitView) {
+    editorB.setMasterOverride(state.paneBMasterId || null);
+    editorB.setGlyph(state.font, currentGlyph());
+  } else {
+    activeEd = editor;
+  }
+  updateComparisonGhosts();
+  renderMastersBar();
+  if (announce) {
+    setStatus(mode === "overlay" ? "Overlay compare: other masters ghost over the active outline. Drag the axis to proof interpolation."
+      : mode === "split" ? "Split compare: masters side by side. Click a pane to edit its master."
+        : "Compare off. Use Overlay or Split to inspect masters without leaving Edit View.");
+  }
+}
+
+function syncAxisControls(): void {
+  const weightEl = document.querySelector<HTMLOutputElement>("#mbWeight");
+  if (weightEl) {
+    const glyph = currentGlyph();
+    const ok = glyph ? interpolateGlyphAt(state.font, glyph.name, state.axisT) !== null : false;
+    weightEl.textContent = `${weightForT(state.font, state.axisT)} · t=${state.axisT.toFixed(2)}${state.font.masters.length >= 2 && !ok ? " · incompatible" : ""}`;
+  }
+  const cursor = document.querySelector<HTMLElement>("#mastersBar .axis-cursor");
+  if (cursor) cursor.style.left = `${state.axisT * 100}%`;
+  const slider = document.querySelector<HTMLInputElement>("#mbAxis");
+  if (slider && document.activeElement !== slider) slider.value = String(Math.round(state.axisT * 1000));
+  document.querySelectorAll<HTMLButtonElement>("#mastersBar [data-mb-step]").forEach((cell) => {
+    const current = Math.abs((Number(cell.dataset.mbStep) || 0) - state.axisT) < 0.13;
+    cell.classList.toggle("is-current", current);
+    cell.setAttribute("aria-pressed", String(current));
+  });
+  const glyphForProof = currentGlyph();
+  document.querySelectorAll<HTMLButtonElement>("#mastersBar [data-mb-step]").forEach((cell) => {
+    const path = cell.querySelector("path");
+    if (path && glyphForProof) path.setAttribute("d", interpolatedPathD(glyphForProof, Number(cell.dataset.mbStep) || 0));
+  });
+  const palSlider = document.querySelector<HTMLInputElement>("#palInterp");
+  if (palSlider && document.activeElement !== palSlider) palSlider.value = String(Math.round(state.axisT * 100));
+}
+
+function setAxisT(t: number, announce = false): void {
+  state.axisT = Math.max(0, Math.min(1, t));
+  updateComparisonGhosts();
+  syncAxisControls();
+  if (state.proofInterpolated) renderPreview();
+  if (announce) setStatus(`Axis proof at weight ${weightForT(state.font, state.axisT)} (t=${state.axisT.toFixed(2)}).`);
+}
+
+function navigateMaster(delta: -1 | 1): void {
+  const next = adjacentMaster(state.font, state.font.currentMasterId, delta);
+  if (!next) { setStatus(delta < 0 ? "Already on the lightest master." : "Already on the heaviest master."); return; }
+  state.font.currentMasterId = next.id;
+  editor.refresh(state.font, currentGlyph());
+  renderAll();
+  setStatus(`Active master: ${next.name} (${next.weightValue}).`);
+}
+
+function renderMastersBar(): void {
+  const bar = $<HTMLElement>("#mastersBar");
+  const glyph = currentGlyph();
+  const masters = sortedMasters(state.font);
+  const range = axisRange(state.font);
+  const weight = weightForT(state.font, state.axisT);
+  const issues = glyph ? issuesForGlyph(state.font, glyph.name) : [];
+  const allIssues = state.font.masters.length >= 2 ? compatibilityReport(state.font) : [];
+  if (masters.length < 2) {
+    bar.innerHTML = `<div class="masters-bar-inner is-single">
+      <span class="masters-bar-label">Masters</span>
+      <span class="masters-chip is-active">${escHtml(masters[0]?.name || "Regular")} · ${masters[0]?.weightValue ?? ""}</span>
+      <span class="hint">Add a second master to compare, interpolate, and proof instances.</span>
+      <button id="mbAddMaster" type="button">+ Master from current</button>
+    </div>`;
+    qs<HTMLButtonElement>(bar, "#mbAddMaster").addEventListener("click", addMasterCopy);
+    return;
+  }
+  const summaries = glyph ? layerSummaries(state.font, glyph) : [];
+  const stops = glyph ? axisStopsForGlyph(state.font, glyph) : [];
+  const span = Math.max(1, range.max - range.min);
+  const chips = summaries.map((s) => {
+    const active = s.masterId === state.font.currentMasterId;
+    const hidden = paletteHiddenMasters.has(s.masterId);
+    const missing = !s.hasLayer;
+    return `<span class="masters-chip${active ? " is-active" : ""}${hidden ? " is-hidden" : ""}${missing ? " is-missing" : ""}">
+      <button class="masters-chip-main" data-mb-master="${escHtml(s.masterId)}" type="button" aria-pressed="${active}" title="Make ${escHtml(s.masterName)} active">${escHtml(s.masterName)} ${s.weight}</button>
+      <button class="masters-chip-eye icon-btn" data-mb-eye="${escHtml(s.masterId)}" type="button" aria-pressed="${!hidden}" aria-label="${hidden ? "Show" : "Hide"} ${escHtml(s.masterName)} overlay" title="${hidden ? "Show overlay" : "Hide overlay"}">${hidden ? "○" : "●"}</button>
+      <small>${missing ? "Missing" : `${s.contours}c · ${s.nodes}n`}</small>
+    </span>`;
+  }).join("");
+  const stopMarks = stops.map((stop) => {
+    const left = Math.max(0, Math.min(100, ((stop.weight - range.min) / span) * 100));
+    return `<span class="axis-stop is-${stop.kind}${stop.masterId === state.font.currentMasterId ? " is-active" : ""}" style="left:${left}%" title="${escHtml(stop.label)} · ${stop.weight}"><i aria-hidden="true"></i><small>${stop.weight}</small></span>`;
+  }).join("");
+  const progression = instanceProgression(state.font, 5).map((step) => {
+    const d = glyph ? interpolatedPathD(glyph, step.t) : "";
+    const current = Math.abs(step.t - state.axisT) < 0.13;
+    return `<button class="progression-cell${current ? " is-current" : ""}" data-mb-step="${step.t}" type="button" aria-pressed="${current}" title="Proof at weight ${step.weight}">
+      <svg viewBox="-80 -720 760 1020" aria-hidden="true"><path d="${escHtml(d)}" transform="scale(1 -1)" fill-rule="evenodd"></path></svg>
+      <small>${step.weight}</small>
+    </button>`;
+  }).join("");
+  const interpOk = glyph ? interpolateGlyphAt(state.font, glyph.name, state.axisT) !== null : false;
+  bar.innerHTML = `<div class="masters-bar-inner">
+    <div class="masters-bar-row">
+      <span class="masters-bar-label">Masters</span>
+      <div class="masters-chips" role="group" aria-label="Master and layer browser">${chips}</div>
+      <div class="hud-group" role="group" aria-label="Master navigation">
+        <button id="mbPrevMaster" class="hud-button" type="button" title="Previous master ([)" aria-label="Previous master">‹</button>
+        <button id="mbNextMaster" class="hud-button" type="button" title="Next master (])" aria-label="Next master">›</button>
+      </div>
+      <div class="seg masters-compare" role="group" aria-label="Comparison mode">
+        <button data-mb-compare="off" class="${state.compareMode === "off" ? "is-on" : ""}" type="button" aria-pressed="${state.compareMode === "off"}">Off</button>
+        <button data-mb-compare="overlay" class="${state.compareMode === "overlay" ? "is-on" : ""}" type="button" aria-pressed="${state.compareMode === "overlay"}">Overlay</button>
+        <button data-mb-compare="split" class="${state.compareMode === "split" ? "is-on" : ""}" type="button" aria-pressed="${state.compareMode === "split"}">Split</button>
+      </div>
+      <label class="masters-ghost">Ghost <input id="mbGhost" type="range" min="10" max="100" value="${Math.round(state.ghostOpacity * 100)}" aria-label="Ghost opacity" /></label>
+      <span class="masters-compat${issues.length ? " is-bad" : ""}" role="status">${issues.length ? `${issues.length} issue(s) on ${escHtml(glyph?.name || "")}` : allIssues.length ? `${allIssues.length} font issue(s)` : "Compatible"}</span>
+    </div>
+    <div class="masters-bar-row masters-axis-row">
+      <span class="masters-bar-label">Axis ${escHtml(state.font.axes[0]?.tag || "wght")}</span>
+      <div class="axis-track" aria-hidden="true"><div class="axis-line"></div>${stopMarks}<span class="axis-cursor" style="left:${state.axisT * 100}%"><i></i></span></div>
+      <input id="mbAxis" type="range" min="0" max="1000" value="${Math.round(state.axisT * 1000)}" aria-label="Interpolation axis position" />
+      <output id="mbWeight" aria-live="polite">${weight} · t=${state.axisT.toFixed(2)}${interpOk ? "" : " · incompatible"}</output>
+      <label class="masters-proof"><input id="mbProof" type="checkbox" ${state.proofInterpolated ? "checked" : ""} /> Proof text interpolated</label>
+    </div>
+    <div class="masters-bar-row masters-progression-row">
+      <span class="masters-bar-label">Instances</span>
+      <div class="progression-strip" role="group" aria-label="Instance progression preview">${progression}</div>
+      <button id="mbExportProof" type="button" ${interpOk ? "" : "disabled"}>Export proof as UFO</button>
+      ${issues.length ? `<button id="mbFixGlyph" type="button">Fix ${escHtml(glyph?.name || "")}: copy base layer</button>` : ""}
+      <button id="mbFontInfo" type="button">Compatibility in Font Info</button>
+    </div>
+  </div>`;
+  bar.querySelectorAll<HTMLButtonElement>("[data-mb-master]").forEach((button) => button.addEventListener("click", () => {
+    const id = button.dataset.mbMaster;
+    if (!id || id === state.font.currentMasterId) return;
+    state.font.currentMasterId = id;
+    editor.refresh(state.font, currentGlyph());
+    renderAll();
+  }));
+  bar.querySelectorAll<HTMLButtonElement>("[data-mb-eye]").forEach((button) => button.addEventListener("click", () => {
+    const id = button.dataset.mbEye;
+    if (!id) return;
+    if (paletteHiddenMasters.has(id)) paletteHiddenMasters.delete(id); else paletteHiddenMasters.add(id);
+    updateComparisonGhosts();
+    renderMastersBar();
+    renderPalette(currentGlyph());
+  }));
+  bar.querySelectorAll<HTMLButtonElement>("[data-mb-compare]").forEach((button) => button.addEventListener("click", () => {
+    setCompareMode((button.dataset.mbCompare || "off") as CompareMode);
+  }));
+  qs<HTMLInputElement>(bar, "#mbGhost").addEventListener("input", (event) => {
+    state.ghostOpacity = (+(event.target as HTMLInputElement).value || 55) / 100;
+    persistMastersPrefs();
+    updateComparisonGhosts();
+  });
+  qs<HTMLInputElement>(bar, "#mbAxis").addEventListener("input", (event) => {
+    setAxisT((+(event.target as HTMLInputElement).value || 0) / 1000);
+  });
+  qs<HTMLInputElement>(bar, "#mbProof").addEventListener("change", (event) => {
+    state.proofInterpolated = (event.target as HTMLInputElement).checked;
+    updateComparisonGhosts();
+    renderPreview();
+    setStatus(state.proofInterpolated ? "Preview text now proofs the interpolated instance at the axis position." : "Preview text shows the active master again.");
+  });
+  qs<HTMLButtonElement>(bar, "#mbPrevMaster").addEventListener("click", () => navigateMaster(-1));
+  qs<HTMLButtonElement>(bar, "#mbNextMaster").addEventListener("click", () => navigateMaster(1));
+  bar.querySelectorAll<HTMLButtonElement>("[data-mb-step]").forEach((button) => button.addEventListener("click", () => {
+    setAxisT(Number(button.dataset.mbStep) || 0, true);
+  }));
+  qs<HTMLButtonElement>(bar, "#mbExportProof").addEventListener("click", () => { void exportInstanceUfo(state.axisT, `Proof-${weight}`); });
+  const fixButton = bar.querySelector<HTMLButtonElement>("#mbFixGlyph");
+  fixButton?.addEventListener("click", () => {
+    if (!glyph) return;
+    const base = sortedMasters(state.font)[0];
+    const target = issues.find((issue) => !issue.masterId.startsWith("inter@"));
+    if (!base || !target) { setStatus("This issue is an intermediate-layer mismatch — recapture the stop from a compatible outline."); return; }
+    pushUndo();
+    if (copyLayerBetweenMasters(state.font, glyph.name, base.id, target.masterId)) {
+      editor.refresh(state.font, glyph);
+      renderAll();
+      setStatus(`Copied the ${base.name} layer of ${glyph.name} over ${target.masterName} — redraw that master.`);
+    } else {
+      state.undoStack.pop();
+      setStatus("Could not apply the fix (source layer missing).");
+    }
+  });
+  qs<HTMLButtonElement>(bar, "#mbFontInfo").addEventListener("click", () => openWorkflow("fontinfo"));
 }
 
 function pushUndo() {
@@ -564,6 +825,9 @@ function visibleGlyphs(): Glyph[] {
   );
 }
 
+let currentCompatBad = new Set<string>();
+function compatBadGlyphs(): Set<string> { return currentCompatBad; }
+
 function glyphViewStatus(glyph: Glyph): { state: "outline" | "component" | "empty"; label: string } {
   if ((glyph.components || []).length) return { state: "component", label: "Component" };
   if (glyphHasOutline(state.font, glyph)) return { state: "outline", label: "Outline" };
@@ -710,6 +974,9 @@ function commitFontViewSelection(name: string, shown: Glyph[], mode: "replace" |
 }
 
 function renderFontView() {
+  currentCompatBad = state.font.masters.length >= 2
+    ? new Set(compatibilityReport(state.font).map((issue) => issue.glyphName))
+    : new Set<string>();
   const grid = $<HTMLElement>("#glyphGrid");
   const previousMode = grid.dataset.viewMode as "grid" | "list" | undefined;
   if (previousMode) state.fontViewScroll[previousMode] = grid.scrollTop;
@@ -819,7 +1086,7 @@ function renderFontView() {
       }
       const name = document.createElement("div"); name.className = "gname"; name.textContent = g.name; cell.appendChild(name);
       const meta = document.createElement("div"); meta.className = "gmeta";
-      meta.innerHTML = `<span class="guni">${g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")}` : "—"}</span><span class="gstatus">${status.label}</span>`;
+      meta.innerHTML = `<span class="guni">${g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")}` : "—"}</span><span class="gstatus">${status.label}</span>${compatBadGlyphs().has(g.name) ? '<span class="gcompat" title="Interpolation issue — open in Edit View">⚠ masters</span>' : ""}`;
       cell.appendChild(meta);
       bindFontViewItem(cell, g, shown, idx);
       fragment.appendChild(cell);
@@ -976,6 +1243,8 @@ function renderHeader() {
 }
 
 function renderDynamic(refitSide = true) {
+  if (refitSide) renderMastersBar();
+  updateComparisonGhosts();
   renderHeader();
   renderTabs();
   renderFontView();
@@ -985,6 +1254,8 @@ function renderDynamic(refitSide = true) {
 }
 
 function renderAll() {
+  renderMastersBar();
+  updateComparisonGhosts();
   renderHeader();
   renderTabs();
   renderFontView();
@@ -1027,7 +1298,9 @@ function renderPreview() {
     const g = findGlyph(state.font, item.name);
     const isMark = item.advance === 0 && item.dx !== undefined;
     if (g) {
-      const d = glyphToPathDResolved(state.font, g, state.font.currentMasterId);
+      const d = state.proofInterpolated && state.font.masters.length >= 2
+        ? (interpolatedPathD(g, state.axisT) || glyphToPathDResolved(state.font, g, state.font.currentMasterId))
+        : glyphToPathDResolved(state.font, g, state.font.currentMasterId);
       if (d) {
         const p = document.createElementNS(SVGNS, "path");
         p.setAttribute("d", d);
@@ -1320,7 +1593,7 @@ function renderPalette(g: Glyph): void {
   const masterRows = state.font.masters.map((master) => `
     <div class="layer-row${master.id === state.font.currentMasterId ? " is-active" : ""}${paletteHiddenMasters.has(master.id) ? " is-hidden" : ""}">
       <button class="layer-visibility icon-btn" data-layer-visibility="${escHtml(master.id)}" type="button" aria-label="${paletteHiddenMasters.has(master.id) ? "Show" : "Hide"} ${escHtml(master.name)} layer" aria-pressed="${!paletteHiddenMasters.has(master.id)}" title="${paletteHiddenMasters.has(master.id) ? "Show layer" : "Hide layer"}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 8s2.3-3.3 6.2-3.3S14.2 8 14.2 8 11.9 11.3 8 11.3 1.8 8 1.8 8Z"/><circle cx="8" cy="8" r="1.6"/>${paletteHiddenMasters.has(master.id) ? '<path d="m3 3 10 10"/>' : ""}</svg></button>
-      <button class="layer-select" data-master-layer="${escHtml(master.id)}" type="button"><span><strong>${escHtml(master.name)}</strong><small>${master.weightValue || 0} weight</small></span></button>
+      <button class="layer-select" data-master-layer="${escHtml(master.id)}" type="button"><span><strong>${escHtml(master.name)}</strong><small>${master.weightValue || 0} weight · ${(g.layers[master.id]?.paths.length ?? 0)}c · ${(g.layers[master.id]?.paths.reduce((n, c) => n + c.nodes.length, 0) ?? 0)}n${g.layers[master.id] ? "" : " · missing"}</small></span></button>
       <span class="layer-kind">${master.id === state.font.currentMasterId ? "Active" : "Master"}</span>
     </div>`).join("");
   const componentRows = (g.components || []).map((component) => `<div class="component-row"><span>${escHtml(component.glyph)}</span><span>${Math.round(component.x)}, ${Math.round(component.y)}</span></div>`).join("");
@@ -1366,7 +1639,7 @@ function renderPalette(g: Glyph): void {
     </details>
     <details class="palette-section" data-palette-section="layers"${open("layers")}>
       <summary><span>Layers</span><small>${state.font.masters.length} master${state.font.masters.length === 1 ? "" : "s"}</small></summary>
-      <div class="palette-section-body"><div class="layer-list">${masterRows}</div><div class="palette-actions"><button id="palCopyLayer" type="button">New master from layer…</button></div><div class="subsection-label">Intermediate layers</div><div id="intermediateList"></div><button id="palAddIntermediate" class="quiet-action" type="button">Capture intermediate…</button></div>
+      <div class="palette-section-body"><div class="layer-list">${masterRows}</div><div id="palCompat"></div><div class="palette-actions"><button id="palCopyLayer" type="button">New master from layer…</button></div><div class="subsection-label">Intermediate layers</div><div id="intermediateList"></div><button id="palAddIntermediate" class="quiet-action" type="button">Capture intermediate…</button></div>
     </details>
     <details class="palette-section" data-palette-section="components"${open("components")} ${(g.components || []).length ? "" : "hidden"}>
       <summary><span>Components</span><small>${(g.components || []).length}</small></summary>
@@ -1417,6 +1690,8 @@ function renderPalette(g: Glyph): void {
     const masterId = button.dataset.layerVisibility;
     if (!masterId) return;
     if (paletteHiddenMasters.has(masterId)) paletteHiddenMasters.delete(masterId); else paletteHiddenMasters.add(masterId);
+    updateComparisonGhosts();
+    renderMastersBar();
     $<SVGSVGElement>("#editorSvg").classList.toggle("palette-outline-hidden", paletteHiddenMasters.has(state.font.currentMasterId));
     renderPalette(g);
     setStatus(`${state.font.masters.find((master) => master.id === masterId)?.name || "Layer"} ${paletteHiddenMasters.has(masterId) ? "hidden" : "visible"}.`);
@@ -1503,16 +1778,17 @@ function renderPalette(g: Glyph): void {
   });
   const interpSlider = qs<HTMLInputElement>(page, "#palInterp");
   const interpLabel = qs<HTMLElement>(page, "#palInterpLabel");
+  interpSlider.value = String(Math.round(state.axisT * 100));
   const updateInterp = (): void => {
     const t = (+interpSlider.value || 0) / 100;
     const ig = interpolateGlyphAt(state.font, g.name, t);
     if (!ig) {
-      interpLabel.textContent = state.font.masters.length < 2 ? "Add a second master to interpolate." : "Masters incompatible for this glyph (contour/node order differs).";
-      editor.setGhostD(null);
+        interpLabel.textContent = state.font.masters.length < 2 ? "Add a second master to interpolate." : "Masters incompatible for this glyph (contour/node order differs). See the Masters bar for the fix.";
+      setAxisT(t);
       return;
     }
     interpLabel.textContent = `t=${t.toFixed(2)} between ${state.font.masters[0].name} and ${state.font.masters[state.font.masters.length - 1].name} — dashed green ghost in the editor.`;
-    editor.setGhostD(contoursToPathD(ig.layers[state.font.currentMasterId]?.paths ?? []));
+    setAxisT(t);
   };
   interpSlider.addEventListener("input", updateInterp);
   updateInterp();
@@ -1608,6 +1884,27 @@ function renderPalette(g: Glyph): void {
     renderAll();
     setStatus(`Backup layer saved: ${backup.name}. Restore it any time from the Palette.`);
   });
+  const palCompat = qs<HTMLElement>(page, "#palCompat");
+  const glyphIssues = state.font.masters.length >= 2 ? issuesForGlyph(state.font, g.name) : [];
+  palCompat.innerHTML = state.font.masters.length < 2
+    ? '<p class="hint">Single master — no compatibility check needed.</p>'
+    : glyphIssues.length
+      ? glyphIssues.map((issue, i) => `<div class="compat-row"><span>${escHtml(issue.masterName)}: ${escHtml(issue.detail)}</span>${issue.masterId.startsWith("inter@") ? "" : `<button data-pal-fix="${i}" type="button">Fix</button>`}</div>`).join("")
+      : '<p class="hint">This glyph is interpolation-compatible.</p>';
+  palCompat.querySelectorAll<HTMLButtonElement>("[data-pal-fix]").forEach((button) => button.addEventListener("click", () => {
+    const issue = glyphIssues[Number(button.dataset.palFix) || 0];
+    if (!issue) return;
+    const base = sortedMasters(state.font)[0];
+    pushUndo();
+    if (copyLayerBetweenMasters(state.font, g.name, base.id, issue.masterId)) {
+      editor.refresh(state.font, g);
+      renderAll();
+      setStatus(`Copied the ${base.name} layer of ${g.name} over ${issue.masterName} — redraw that master.`);
+    } else {
+      state.undoStack.pop();
+      setStatus("Could not apply the fix (source layer missing).");
+    }
+  }));
   const intermediateList = qs<HTMLElement>(page, "#intermediateList");
   intermediateList.innerHTML = (g.intermediates || []).length
     ? (g.intermediates || []).map((s, i) => `<div class="field-row"><span>Weight ${s.axisValue} · ${s.paths.length} contour(s)</span><span><button data-inter-load="${i}" type="button">Load</button> <button data-inter-del="${i}" type="button">Delete</button></span></div>`).join("")
@@ -1851,7 +2148,16 @@ function renderFontInfo(): void {
   } else {
     const shown = issues.slice(0, 30);
     compatEl.innerHTML = `<p class="hint">${issues.length} issue(s)${issues.length > shown.length ? ` (first ${shown.length} shown)` : ""}. Fix copies the base master layer over the broken one; redraw that glyph on the target master afterwards.</p>` +
-      shown.map((issue, i) => `<div class="compat-row"><span><strong>${escHtml(issue.glyphName)}</strong> · ${escHtml(issue.masterName)}: ${escHtml(issue.detail)}</span>${!issue.masterId.startsWith("inter@") ? `<button data-compat-fix="${i}" type="button">Fix: copy base layer</button>` : ""}</div>`).join("");
+      shown.map((issue, i) => `<div class="compat-row"><span><strong>${escHtml(issue.glyphName)}</strong> · ${escHtml(issue.masterName)}: ${escHtml(issue.detail)}</span><button data-compat-open="${i}" type="button">Open glyph</button>${!issue.masterId.startsWith("inter@") ? `<button data-compat-fix="${i}" type="button">Fix: copy base layer</button>` : ""}</div>`).join("");
+    compatEl.querySelectorAll<HTMLButtonElement>("[data-compat-open]").forEach((btn) => btn.addEventListener("click", () => {
+      const issue = shown[Number(btn.dataset.compatOpen) || 0];
+      if (!issue) return;
+      $<HTMLDialogElement>("#workflowDialog").close();
+      setWorkspace("edit");
+      if (!issue.masterId.startsWith("inter@")) state.font.currentMasterId = issue.masterId;
+      openGlyph(issue.glyphName, true);
+      setStatus(`Editing ${issue.glyphName} on ${issue.masterName}: ${issue.detail}`);
+    }));
     compatEl.querySelectorAll<HTMLButtonElement>("[data-compat-fix]").forEach((btn) => btn.addEventListener("click", () => {
       const issue = shown[Number(btn.dataset.compatFix) || 0];
       if (!issue) return;
@@ -1973,6 +2279,15 @@ function addMasterCopy(): void {
 }
 
 function toggleSplitView(): void {
+  setCompareMode(state.compareMode === "split" ? "off" : "split", false);
+  if (state.compareMode === "split") {
+    setStatus(state.font.masters.length < 2
+      ? "Side-by-side on, but this font has one master — use + Master (copy) to create the second one."
+      : "Side-by-side masters: click a pane to make it active, then draw/edit. Each pane keeps its own master.");
+  } else setStatus("Side-by-side off.");
+  return;
+}
+function toggleSplitViewLegacy(): void {
   state.splitView = !state.splitView;
   renderHeader();
   if (state.splitView) {
@@ -2179,7 +2494,18 @@ function renderExport(): void {
     <div class="field"><label>Warnings</label>${issueList(report.warnings)}</div>
     <p class="hint">Exports use the active master (variable uses all masters). Handbook ref: Import &amp; Export (p104), Font Info Exports (p92). Full shaping/hinting stays deferred — proof binaries externally.</p>`;
   void probeCompileService(qs<HTMLElement>(page, "#exportService"));
-  qs<HTMLButtonElement>(page, "#exportGo").addEventListener("click", () => { void runExport(qs<HTMLSelectElement>(page, "#exportFormat").value); });
+  qs<HTMLButtonElement>(page, "#exportGo").addEventListener("click", async (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    const format = qs<HTMLSelectElement>(page, "#exportFormat").value;
+    button.disabled = true;
+    button.textContent = "Exporting…";
+    button.setAttribute("aria-busy", "true");
+    try { await runExport(format); } finally {
+      button.disabled = false;
+      button.textContent = "Export font";
+      button.removeAttribute("aria-busy");
+    }
+  });
 }
 
 async function runExport(format: string): Promise<void> {
@@ -2213,6 +2539,11 @@ async function runExport(format: string): Promise<void> {
   } catch (err) {
     setStatus(`Export failed (${format}): ${(err as Error).message}. Browser formats still work without the service.`);
   }
+}
+
+function openShortcuts(): void {
+  const dialog = $<HTMLDialogElement>("#shortcutsDialog");
+  if (!dialog.open) dialog.showModal();
 }
 
 function openWorkflow(name: "fontinfo" | "features" | "export" = "fontinfo"): void {
@@ -2261,6 +2592,7 @@ function dispatch(cmd: string): void {
     case "toggle-inspector": toggleChromePanel("right-collapsed", $<HTMLButtonElement>("#toggleRightBtn")); break;
     case "toggle-preview": toggleChromePanel("preview-collapsed", $<HTMLButtonElement>("#togglePreviewBtn")); break;
     case "reset-layout": resetWorkspaceLayout(); break;
+    case "shortcuts": openShortcuts(); break;
     case "add-glyph": addGlyphFlow(); break;
     case "create-composite": createCompositeFlow(); break;
     case "add-rect": if (g) activeEd.addContour(rectContour(80, 0, 360, 500)); break;
@@ -2731,7 +3063,12 @@ document.addEventListener("keydown", (ev) => {
   if (mod && ev.key.toLowerCase() === "z" && !ev.shiftKey) { ev.preventDefault(); undo(); return; }
   if ((mod && ev.key.toLowerCase() === "y") || (mod && ev.shiftKey && ev.key.toLowerCase() === "z")) { ev.preventDefault(); redo(); return; }
   if (mod && ev.altKey && ev.key === "0") { ev.preventDefault(); resetWorkspaceLayout(); return; }
+  if (!typing && ev.key === "?") { ev.preventDefault(); openShortcuts(); return; }
   if (typing) return;
+  if (ev.key === "[") { ev.preventDefault(); navigateMaster(-1); return; }
+  if (ev.key === "]") { ev.preventDefault(); navigateMaster(1); return; }
+  if (ev.key === ",") { ev.preventDefault(); setAxisT(state.axisT - (ev.shiftKey ? 0.1 : 0.02), true); return; }
+  if (ev.key === ".") { ev.preventDefault(); setAxisT(state.axisT + (ev.shiftKey ? 0.1 : 0.02), true); return; }
   if (ev.altKey && ev.key === "ArrowLeft") { ev.preventDefault(); navigateGlyph(-1); return; }
   if (ev.altKey && ev.key === "ArrowRight") { ev.preventDefault(); navigateGlyph(1); return; }
   if (ev.code === "Space" && state.editMode === "edit" && !spacePanning) {
@@ -2808,6 +3145,73 @@ document.addEventListener("keydown", (ev) => {
   open?.querySelector<HTMLButtonElement>(".menu-btn")?.focus();
 });
 
+// R6: lightweight context menus (glyph items + canvas). Keyboard: focus
+// lands on the first item, Escape/outside click closes, arrows move.
+interface ContextItem { label: string; run: () => void; disabled?: boolean }
+function closeContextMenu(): void {
+  const menu = $<HTMLElement>("#contextMenu");
+  menu.hidden = true;
+  menu.innerHTML = "";
+}
+function openContextMenu(x: number, y: number, items: ContextItem[]): void {
+  const menu = $<HTMLElement>("#contextMenu");
+  menu.innerHTML = "";
+  for (const item of items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.textContent = item.label;
+    button.disabled = Boolean(item.disabled);
+    button.addEventListener("click", () => { closeContextMenu(); item.run(); });
+    menu.appendChild(button);
+  }
+  menu.hidden = false;
+  const width = 220, height = Math.max(36, items.length * 30 + 8);
+  menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - width - 8))}px`;
+  menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - height - 8))}px`;
+  menu.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+}
+$<HTMLElement>("#glyphGrid").addEventListener("contextmenu", (event) => {
+  const target = (event.target as HTMLElement).closest<HTMLElement>("[data-glyph-name]");
+  if (!target?.dataset.glyphName) return;
+  event.preventDefault();
+  const name = target.dataset.glyphName;
+  const glyph = findGlyph(state.font, name);
+  if (!glyph) return;
+  if (!state.selectedGlyphNames.has(name)) {
+    state.selectedGlyphNames = new Set([name]);
+    state.focusedGlyphName = name;
+    updateFontViewSelectionUI();
+  }
+  openContextMenu(event.clientX, event.clientY, [
+    { label: `Open ${name} in Edit View`, run: () => { setWorkspace("edit"); openGlyph(name, true); } },
+    { label: "Apply glyph info to selection", run: () => $<HTMLButtonElement>("#applyInfoBtn").click(), disabled: !state.selectedGlyphNames.size },
+    { label: state.font.masters.length >= 2 ? `Check ${name} compatibility` : "Add a second master to check compatibility", run: () => { setWorkspace("edit"); openGlyph(name, false); openWorkflow("fontinfo"); }, disabled: state.font.masters.length < 2 },
+    { label: "Delete selected glyph(s)", run: () => $<HTMLButtonElement>("#deleteSelectedBtn").click(), disabled: !state.selectedGlyphNames.size },
+  ]);
+});
+$<SVGSVGElement>("#editorSvg").addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+  openContextMenu(event.clientX, event.clientY, [
+    { label: "Select tool (V)", run: () => setTool("select") },
+    { label: "Pen tool (P)", run: () => setTool("pen") },
+    { label: "Overlay compare", run: () => setCompareMode("overlay"), disabled: state.font.masters.length < 2 },
+    { label: "Split masters", run: () => setCompareMode("split"), disabled: state.font.masters.length < 2 },
+    { label: "Keyboard shortcuts (?)", run: () => openShortcuts() },
+  ]);
+});
+document.addEventListener("pointerdown", (event) => {
+  const menu = $<HTMLElement>("#contextMenu");
+  if (!menu.hidden && !(event.target as HTMLElement).closest("#contextMenu")) closeContextMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeContextMenu();
+});
+$<HTMLDialogElement>("#shortcutsDialog").addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) $<HTMLDialogElement>("#shortcutsDialog").close();
+});
+$("#closeShortcutsDialog").addEventListener("click", () => $<HTMLDialogElement>("#shortcutsDialog").close());
+
 // Boot. In the Electron shell the native menu drives the same commands.
 $("#app").classList.toggle("is-desktop", isDesktop());
 syncChromePrefs();
@@ -2815,4 +3219,9 @@ $<HTMLButtonElement>("#toggleLeftBtn").disabled = state.workspace === "font";
 onDesktopMenuCommand((command) => dispatch(command));
 editor.setGlyph(state.font, currentGlyph());
 renderAll();
+if (state.splitView) {
+  editorB.setMasterOverride(state.paneBMasterId || null);
+  editorB.setGlyph(state.font, currentGlyph());
+  updateComparisonGhosts();
+}
 setTool("select");

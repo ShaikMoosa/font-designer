@@ -176,6 +176,22 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   and note live on the glyph, are edited in the Inspector, shown in the
   details pane, and round-trip through `.glyphs` (JSON and OpenStep)
   and UFO GLIF files.
+- **Pre-Phase 12 UI Ramp R5 — Masters, interpolation, proofing:** A
+  Masters bar above the canvas provides a master/layer browser (active,
+  visible, hidden, missing states with contour/node counts), Off /
+  Overlay / Split comparison with ghost-opacity control, prev/next
+  master navigation (`[` / `]`), a weight-axis track with master and
+  intermediate stops, continuous axis scrubbing (`,` / `.`), a five-step
+  instance progression strip, interpolated proof-text preview, proof
+  UFO export, and inline compatibility fixes. The Palette Layers
+  section and Font Info expose the same per-glyph issues; Font View
+  flags incompatible glyphs.
+- **Pre-Phase 12 UI Ramp R6 — Workflow hardening:** Glyph-grid and
+  canvas context menus, a Keyboard Shortcuts dialog (View menu or
+  `?`), export busy states, and screenshot baselines in
+  `docs/ui-baselines/` (Edit View at three sizes plus 150% scale,
+  Overlay, Split, Font View). Focus-visible, reduced-motion, and
+  high-DPI behavior from R1–R4 is retained.
 - **Interpolation pro (Phase 11):** Font Info carries a
   master-compatibility report with one-click layer-copy fixes, an
   instances editor (active flag, axis weight, style linking,

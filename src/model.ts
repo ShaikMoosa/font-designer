@@ -695,6 +695,92 @@ export function instanceAxisWeight(font: Font, instance: FontInstance): number {
 
 export interface XY { x: number; y: number }
 
+// --- R5: visual masters / interpolation helpers (pure, no DOM) ---
+
+/** Masters ordered by axis weight (stable for equal weights). */
+export function sortedMasters(font: Font): FontMaster[] {
+  return [...font.masters].sort((a, b) => (a.weightValue || 0) - (b.weightValue || 0));
+}
+
+/** Axis extent from the declared axis, falling back to master weights. */
+export function axisRange(font: Font): { min: number; max: number; defaultValue: number } {
+  const axis = font.axes[0];
+  if (axis && axis.max > axis.min) return { min: axis.min, max: axis.max, defaultValue: axis.defaultValue };
+  const weights = font.masters.map((m) => m.weightValue || 0);
+  const min = weights.length ? Math.min(...weights) : 400;
+  const max = weights.length ? Math.max(...weights) : 700;
+  return { min, max: max > min ? max : min + 300, defaultValue: min };
+}
+
+/** Axis weight for interpolation t between the outer masters. */
+export function weightForT(font: Font, t: number): number {
+  if (font.masters.length < 2) return font.masters[0]?.weightValue ?? axisRange(font).defaultValue;
+  const weights = font.masters.map((m) => m.weightValue || 0);
+  const lo = Math.min(...weights), hi = Math.max(...weights);
+  const clamped = Math.max(0, Math.min(1, t));
+  return Math.round(lo + (hi - lo) * clamped);
+}
+
+export interface AxisStop {
+  weight: number;
+  kind: "master" | "intermediate";
+  label: string;
+  masterId?: string;
+}
+
+/** Every stop on the weight axis for a glyph: masters plus its brace layers. */
+export function axisStopsForGlyph(font: Font, glyph: Glyph): AxisStop[] {
+  const stops: AxisStop[] = sortedMasters(font).map((m) => ({
+    weight: m.weightValue || 0, kind: "master" as const, label: m.name, masterId: m.id,
+  }));
+  for (const stop of glyph.intermediates || []) {
+    stops.push({ weight: stop.axisValue, kind: "intermediate", label: `Intermediate ${stop.axisValue}` });
+  }
+  return stops.sort((a, b) => a.weight - b.weight || (a.kind === b.kind ? 0 : a.kind === "master" ? -1 : 1));
+}
+
+/** Compatibility issues for one glyph (empty when it interpolates cleanly). */
+export function issuesForGlyph(font: Font, glyphName: string): CompatIssue[] {
+  return compatibilityReport(font).filter((issue) => issue.glyphName === glyphName);
+}
+
+/** Previous/next master in weight order, or null at the ends. */
+export function adjacentMaster(font: Font, currentId: string, delta: -1 | 1): FontMaster | null {
+  const ordered = sortedMasters(font);
+  const index = ordered.findIndex((m) => m.id === currentId);
+  if (index < 0) return null;
+  return ordered[index + delta] ?? null;
+}
+
+/** Evenly spaced proof positions across the axis (endpoints included). */
+export function instanceProgression(font: Font, steps = 5): Array<{ t: number; weight: number }> {
+  const count = Math.max(2, Math.min(9, Math.round(steps) || 5));
+  return Array.from({ length: count }, (_, i) => {
+    const t = count === 1 ? 0 : i / (count - 1);
+    return { t, weight: weightForT(font, t) };
+  });
+}
+
+export interface LayerSummary {
+  masterId: string; masterName: string; weight: number;
+  hasLayer: boolean; contours: number; nodes: number;
+}
+
+/** Per-master outline summary for the layer browser. */
+export function layerSummaries(font: Font, glyph: Glyph): LayerSummary[] {
+  return sortedMasters(font).map((master) => {
+    const layer = glyph.layers[master.id];
+    return {
+      masterId: master.id,
+      masterName: master.name,
+      weight: master.weightValue || 0,
+      hasLayer: Boolean(layer),
+      contours: layer?.paths.length ?? 0,
+      nodes: layer ? layer.paths.reduce((n, c) => n + c.nodes.length, 0) : 0,
+    };
+  });
+}
+
 // Ramer–Douglas–Peucker polyline simplification. Endpoints are always kept;
 // interior points survive only when farther than epsilon from the segment.
 export function simplifyPoints(points: XY[], epsilon: number): XY[] {

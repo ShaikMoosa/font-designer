@@ -12,6 +12,7 @@ function el(tag: string, attrs: Record<string, string | number> = {}): SVGElemen
 }
 
 export type Tool = "select" | "pen" | "pencil" | "measure" | "hand" | "text";
+export interface GhostLayer { d: string; kind: "master" | "interp" }
 export interface Selection { pathIdx: number; nodeIdx: number }
 export interface FontPoint { x: number; y: number }
 export interface MeasureInfo extends Measurement { ax: number; ay: number; bx: number; by: number }
@@ -51,6 +52,7 @@ export interface Editor {
   nudgeSelected: (dx: number, dy: number) => void;
   getSelected: () => Selection | null;
   setGhostD: (d: string | null) => void;
+  setGhostLayers: (layers: GhostLayer[], opacity?: number) => void;
   setMasterOverride: (masterId: string | null) => void;
   alignSelection: (mode: AlignMode) => void;
   getSelectionCount: () => number;
@@ -63,6 +65,8 @@ interface EditorState {
   selected: Selection | null; selectionSet: Selection[]; activePathIdx: number;
   pendingHandle: FontPoint | null; drag: Drag | null;
   ghostD: string | null;
+  ghostLayers: GhostLayer[];
+  ghostOpacity: number;
   masterOverride: string | null;
   pencilPts: FontPoint[] | null;
   measureA: FontPoint | null; measureB: FontPoint | null; measureFixed: boolean;
@@ -79,6 +83,8 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     pendingHandle: null,
     drag: null,
     ghostD: null,
+    ghostLayers: [],
+    ghostOpacity: 0.55,
     masterOverride: null,
     pencilPts: null,
     measureA: null, measureB: null, measureFixed: false,
@@ -210,6 +216,12 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     }
     const lay = layer();
     if (!lay) return;
+    for (const ghostLayer of state.ghostLayers) {
+      if (!ghostLayer.d) continue;
+      const ghostEl = el("path", { d: ghostLayer.d, class: `ghost-path ghost-${ghostLayer.kind}`, "stroke-dasharray": `${5 / state.scale} ${5 / state.scale}`, "stroke-width": 1.2 / state.scale, "vector-effect": "non-scaling-stroke" });
+      ghostEl.style.opacity = String(ghostLayer.kind === "interp" ? state.ghostOpacity : state.ghostOpacity * 0.8);
+      gWorld.appendChild(ghostEl);
+    }
     if (state.ghostD) {
       const ghost = el("path", { d: state.ghostD, class: "ghost-path", "stroke-dasharray": `${5 / state.scale} ${5 / state.scale}`, "stroke-width": 1.2 / state.scale, "vector-effect": "non-scaling-stroke" });
       gWorld.appendChild(ghost);
@@ -641,6 +653,7 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     deleteSelected, cutSelectedPath, closeActivePath, convertSelected, addContour, nudgeSelected,
     getSelected: () => state.selected,
     setGhostD(d: string | null) { state.ghostD = d; render(); },
+    setGhostLayers(layers: GhostLayer[], opacity = 0.55) { state.ghostLayers = layers.filter((l) => Boolean(l.d)); state.ghostOpacity = Math.max(0.05, Math.min(1, opacity)); render(); },
     setMasterOverride(masterId: string | null) { state.masterOverride = masterId; state.selected = null; state.selectionSet = []; render(); },
     alignSelection,
     getSelectionCount: () => selectedNodes().length,

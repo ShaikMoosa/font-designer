@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
   createDefaultFont, findGlyph, cloneContours, interpolateGlyphAt,
   compatibilityReport, copyLayerBetweenMasters, instanceT, instanceAxisWeight,
+  sortedMasters, weightForT, axisStopsForGlyph, issuesForGlyph, adjacentMaster, instanceProgression, layerSummaries,
 } from "../src/model.ts";
 import type { Font, Glyph } from "../src/model.ts";
 import { fontToGlyphsJson, glyphsJsonToFont } from "../src/glyphs-io.ts";
@@ -91,4 +92,35 @@ test("intermediate layers and instance style links round-trip .glyphs JSON", () 
   assert.equal(backA.intermediates?.[0].paths.length, a.layers.masterRegular.paths.length);
   assert.equal(back.instances[0].styleLink, "Regular");
   assert.equal(back.instances[0].axisValues?.wght, 550);
+});
+
+test("R5 axis helpers order masters, map weights, and list stops", () => {
+  const font = twoMasterFont();
+  assert.deepEqual(sortedMasters(font).map((m) => m.name), ["Regular", "Bold"]);
+  assert.equal(weightForT(font, 0), 400);
+  assert.equal(weightForT(font, 0.5), 550);
+  assert.equal(weightForT(font, 1), 700);
+  assert.equal(weightForT(font, -1), 400);
+  assert.equal(weightForT(font, 2), 700);
+  const a = findGlyph(font, "A") as Glyph;
+  a.intermediates = [{ axisValue: 550, paths: cloneContours(a.layers.masterRegular.paths) }];
+  assert.deepEqual(axisStopsForGlyph(font, a).map((s) => `${s.kind}:${s.weight}`), ["master:400", "intermediate:550", "master:700"]);
+  assert.deepEqual(instanceProgression(font, 5).map((s) => s.weight), [400, 475, 550, 625, 700]);
+  assert.equal(adjacentMaster(font, "masterRegular", 1)?.id, "masterBold");
+  assert.equal(adjacentMaster(font, "masterBold", 1), null);
+  assert.equal(adjacentMaster(font, "masterBold", -1)?.id, "masterRegular");
+});
+
+test("R5 layer summaries and per-glyph issues drive the visual browser", () => {
+  const font = twoMasterFont();
+  const v = findGlyph(font, "V") as Glyph;
+  delete v.layers.masterBold;
+  const summaries = layerSummaries(font, v);
+  assert.equal(summaries.length, 2);
+  assert.equal(summaries[1].hasLayer, false);
+  assert.equal(summaries[1].contours, 0);
+  assert.ok(issuesForGlyph(font, "V").some((i) => i.problem === "missing-layer"));
+  assert.equal(issuesForGlyph(font, "A").length, 0);
+  copyLayerBetweenMasters(font, "V", "masterRegular", "masterBold");
+  assert.equal(issuesForGlyph(font, "V").length, 0);
 });
