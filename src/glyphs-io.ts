@@ -122,6 +122,13 @@ function glyphsDoc(font: Font): Loose {
           nodes: c.nodes.map((n) => `${n.x} ${n.y} ${n.type.toUpperCase()}`),
         })),
       })) : undefined,
+      intermediates: g.intermediates?.length ? g.intermediates.map((s) => ({
+        axisValue: s.axisValue,
+        paths: s.paths.map((c) => ({
+          closed: c.closed ? 1 : 0,
+          nodes: c.nodes.map((n) => `${n.x} ${n.y} ${n.type.toUpperCase()}`),
+        })),
+      })) : undefined,
       layers: Object.entries(g.layers).map(([layerId, layer]) => ({
         layerId,
         width: g.width,
@@ -265,6 +272,13 @@ export function glyphsJsonToFont(text: string, fileName?: string): Font {
       note: typeof g.note === "string" ? g.note : "",
       glyphCase: g.glyphCase === "upper" || g.glyphCase === "lower" ? g.glyphCase : "",
       scriptOverride: typeof g.scriptOverride === "string" ? g.scriptOverride : "",
+      intermediates: Array.isArray(g.intermediates) ? (g.intermediates as Loose[]).map((s) => ({
+        axisValue: Number(s.axisValue) || 0,
+        paths: ((s.paths || []) as Loose[]).map((c) => ({
+          closed: c.closed === 1 || c.closed === true || String(c.closed) === "1",
+          nodes: ((c.nodes || []) as unknown[]).map(parseNodeToken),
+        })),
+      })) : undefined,
       anchors,
       components,
       layers,

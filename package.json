@@ -9,7 +9,7 @@
     "dev": "vite --host 127.0.0.1 --port 5173",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5173",
-    "test": "node --test test/model.test.ts test/desktop.test.ts test/features.test.ts test/drawing.test.ts test/fontview.test.ts test/glyphdata.test.ts",
+    "test": "node --test test/model.test.ts test/desktop.test.ts test/features.test.ts test/drawing.test.ts test/fontview.test.ts test/glyphdata.test.ts test/interpolation.test.ts",
     "typecheck": "tsc --noEmit",
     "desktop": "npm run build && electron .",
     "build:icon": "python tools/generate_icon.py",

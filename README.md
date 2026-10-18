@@ -150,6 +150,13 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   and note live on the glyph, are edited in the Inspector, shown in the
   details pane, and round-trip through `.glyphs` (JSON and OpenStep)
   and UFO GLIF files.
+- **Interpolation pro (Phase 11):** Font Info carries a
+  master-compatibility report with one-click layer-copy fixes, an
+  instances editor (active flag, axis weight, style linking,
+  per-instance UFO export), and variable-axis settings that feed the
+  compile service's variable-font build. Glyphs can carry intermediate
+  layers — outline stops at a chosen weight that interpolation and
+  instance exports pass through.
 
 ## Deferred (per Handbook)
 

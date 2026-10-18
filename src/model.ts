@@ -30,6 +30,9 @@ export interface Glyph {
   note?: string;
   glyphCase?: "" | "upper" | "lower";
   scriptOverride?: string;
+  // Phase 11: intermediate (brace) layers — outline stops at a weight-axis
+  // value between the first and last master, used by interpolation.
+  intermediates?: IntermediateLayer[];
 }
 
 export function cloneContours(paths: Contour[]): Contour[] {
@@ -66,7 +69,13 @@ export function deleteBackup(glyph: Glyph, backupId: string): boolean {
   return glyph.backups.length !== before;
 }
 export interface FontMaster { id: string; name: string; weightValue: number; axisValues?: Record<string, number> }
-export interface FontInstance { name: string; masterId: string; active: boolean; axisValues?: Record<string, number> }
+export interface FontInstance {
+  name: string; masterId: string; active: boolean; axisValues?: Record<string, number>;
+  // Phase 11: style linking — the name of the instance this one is the
+  // bold/italic counterpart of ("" when unlinked).
+  styleLink?: string;
+}
+export interface IntermediateLayer { axisValue: number; paths: Contour[] }
 export interface FontAxis { tag: string; name: string; min: number; defaultValue: number; max: number }
 export interface Font {
   familyName: string; version: string; unitsPerEm: number;
@@ -476,7 +485,22 @@ export function contourArea(c: Contour): number {
 
 function lerp(a: number, b: number, t: number): number { return Math.round(a + (b - a) * t); }
 
-// Interpolate between the first and last master (by weightValue). Requires
+function interpolatePaths(a: Contour[], b: Contour[], t: number): Contour[] | null {
+  if (a.length !== b.length) return null;
+  const paths: Contour[] = [];
+  for (let i = 0; i < a.length; i++) {
+    const ca = a[i], cb = b[i];
+    if (ca.closed !== cb.closed || ca.nodes.length !== cb.nodes.length) return null;
+    paths.push({
+      closed: ca.closed,
+      nodes: ca.nodes.map((n, j) => ({ x: lerp(n.x, cb.nodes[j].x, t), y: lerp(n.y, cb.nodes[j].y, t), type: n.type })),
+    });
+  }
+  return paths;
+}
+
+// Interpolate between the first and last master (by weightValue), passing
+// through the glyph's intermediate layers as extra stops. Requires
 // compatible outlines; returns null when contours/nodes do not line up.
 export function interpolateGlyphAt(font: Font, glyphName: string, t: number): Glyph | null {
   const glyph = findGlyph(font, glyphName);
@@ -484,16 +508,26 @@ export function interpolateGlyphAt(font: Font, glyphName: string, t: number): Gl
   const sorted = [...font.masters].sort((a, b) => (a.weightValue || 0) - (b.weightValue || 0));
   const ma = sorted[0], mb = sorted[sorted.length - 1];
   const la = glyph.layers[ma.id], lb = glyph.layers[mb.id];
-  if (!la || !lb || la.paths.length !== lb.paths.length) return null;
-  const paths: Contour[] = [];
-  for (let i = 0; i < la.paths.length; i++) {
-    const ca = la.paths[i], cb = lb.paths[i];
-    if (ca.closed !== cb.closed || ca.nodes.length !== cb.nodes.length) return null;
-    paths.push({
-      closed: ca.closed,
-      nodes: ca.nodes.map((n, j) => ({ x: lerp(n.x, cb.nodes[j].x, t), y: lerp(n.y, cb.nodes[j].y, t), type: n.type })),
-    });
+  if (!la || !lb) return null;
+  const w0 = ma.weightValue || 0, w1 = mb.weightValue || 0;
+  const target = w0 + (w1 - w0) * Math.max(0, Math.min(1, t));
+  const stops: Array<{ w: number; paths: Contour[] }> = [
+    { w: w0, paths: la.paths },
+    ...(glyph.intermediates || []).map((s) => ({ w: s.axisValue, paths: s.paths })),
+    { w: w1, paths: lb.paths },
+  ].filter((s) => s.w >= Math.min(w0, w1) && s.w <= Math.max(w0, w1))
+    .sort((a, b) => a.w - b.w);
+  let paths: Contour[] | null = null;
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i], b = stops[i + 1];
+    if (target >= a.w && target <= b.w) {
+      const local = b.w === a.w ? 0 : (target - a.w) / (b.w - a.w);
+      paths = interpolatePaths(a.paths, b.paths, local);
+      break;
+    }
   }
+  if (!paths && stops.length >= 2) paths = interpolatePaths(stops[0].paths, stops[stops.length - 1].paths, t);
+  if (!paths) return null;
   return {
     ...glyph,
     width: lerp(glyph.width, glyph.width, t),
@@ -503,6 +537,87 @@ export function interpolateGlyphAt(font: Font, glyphName: string, t: number): Gl
 
 export function mastersCompatible(font: Font, glyphName: string): boolean {
   return interpolateGlyphAt(font, glyphName, 0.5) !== null;
+}
+
+// --- Phase 11: master compatibility, instance mapping ---
+
+export interface CompatIssue {
+  glyphName: string; masterId: string; masterName: string;
+  problem: "missing-layer" | "contour-count" | "node-count" | "closed-mismatch";
+  detail: string;
+}
+
+/**
+ * Per-glyph compatibility report against the first master (by weight):
+ * every glyph/master combination that would break interpolation, with a
+ * human-readable detail. An empty list means the font interpolates cleanly.
+ */
+export function compatibilityReport(font: Font): CompatIssue[] {
+  const issues: CompatIssue[] = [];
+  if (font.masters.length < 2) return issues;
+  const sorted = [...font.masters].sort((a, b) => (a.weightValue || 0) - (b.weightValue || 0));
+  const base = sorted[0];
+  for (const glyph of font.glyphs) {
+    const baseLayer = glyph.layers[base.id];
+    if (!baseLayer) {
+      issues.push({ glyphName: glyph.name, masterId: base.id, masterName: base.name, problem: "missing-layer", detail: `No layer on base master ${base.name}` });
+      continue;
+    }
+    for (const master of sorted.slice(1)) {
+      const layer = glyph.layers[master.id];
+      if (!layer) {
+        issues.push({ glyphName: glyph.name, masterId: master.id, masterName: master.name, problem: "missing-layer", detail: `No layer on master ${master.name}` });
+        continue;
+      }
+      if (layer.paths.length !== baseLayer.paths.length) {
+        issues.push({ glyphName: glyph.name, masterId: master.id, masterName: master.name, problem: "contour-count", detail: `${layer.paths.length} contour(s) vs ${baseLayer.paths.length} on ${base.name}` });
+        continue;
+      }
+      for (let i = 0; i < baseLayer.paths.length; i++) {
+        const a = baseLayer.paths[i], b = layer.paths[i];
+        if (a.closed !== b.closed) {
+          issues.push({ glyphName: glyph.name, masterId: master.id, masterName: master.name, problem: "closed-mismatch", detail: `Contour ${i + 1} is ${b.closed ? "closed" : "open"} here but ${a.closed ? "closed" : "open"} on ${base.name}` });
+        } else if (a.nodes.length !== b.nodes.length) {
+          issues.push({ glyphName: glyph.name, masterId: master.id, masterName: master.name, problem: "node-count", detail: `Contour ${i + 1}: ${b.nodes.length} node(s) vs ${a.nodes.length} on ${base.name}` });
+        }
+      }
+    }
+    for (const stop of glyph.intermediates || []) {
+      if (interpolatePaths(baseLayer.paths, stop.paths, 0.5) === null) {
+        issues.push({ glyphName: glyph.name, masterId: `inter@${stop.axisValue}`, masterName: `Intermediate @ ${stop.axisValue}`, problem: "node-count", detail: `Intermediate layer at ${stop.axisValue} does not match the base master's contour/node structure` });
+      }
+    }
+  }
+  return issues;
+}
+
+/**
+ * The standard fix for a missing or mismatched layer: copy another
+ * master's layer over it. Returns false when either side is unavailable.
+ */
+export function copyLayerBetweenMasters(font: Font, glyphName: string, fromMasterId: string, toMasterId: string): boolean {
+  const glyph = findGlyph(font, glyphName);
+  const src = glyph?.layers[fromMasterId];
+  if (!glyph || !src || fromMasterId === toMasterId) return false;
+  glyph.layers[toMasterId] = { paths: cloneContours(src.paths) };
+  return true;
+}
+
+/** Interpolation t (0..1) for an axis weight between the outer masters. */
+export function instanceT(font: Font, axisWeight: number): number {
+  if (font.masters.length < 2) return 0;
+  const weights = font.masters.map((m) => m.weightValue || 0);
+  const lo = Math.min(...weights), hi = Math.max(...weights);
+  if (hi === lo) return 0;
+  return Math.max(0, Math.min(1, (axisWeight - lo) / (hi - lo)));
+}
+
+/** The axis weight an instance sits at (explicit value, else its master's). */
+export function instanceAxisWeight(font: Font, instance: FontInstance): number {
+  const axisTag = font.axes[0]?.tag || "wght";
+  const explicit = instance.axisValues?.[axisTag];
+  if (explicit != null) return explicit;
+  return font.masters.find((m) => m.id === instance.masterId)?.weightValue ?? font.axes[0]?.defaultValue ?? 400;
 }
 
 export interface XY { x: number; y: number }

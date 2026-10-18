@@ -7,6 +7,7 @@ import {
   deleteBackup, restoreBackup, snapshotLayer,
   GLYPH_CATEGORIES, categoryForGlyph, scriptForGlyph, thumbCanvasSize, fontViewCountText,
   renameGlyph, moveGlyphInOrder, applyGlyphInfo, glyphMatchesFilter, sortGlyphsForDisplay, GLYPH_FILTERS, parseTags,
+  compatibilityReport, copyLayerBetweenMasters, instanceT, instanceAxisWeight, cloneContours,
 } from "./model.ts";
 import type { GlyphFilter, GlyphSortMode } from "./model.ts";
 import { glyphInfoFor, glyphSuggestionFor, productionNameFor, COLOR_LABELS } from "./glyphinfo.ts";
@@ -719,6 +720,11 @@ function renderPalette(g: Glyph): void {
       <div class="field-row"><button id="palBackup" type="button">+ Backup layer</button></div>
       <div id="backupList"></div>
     </div>
+    <div class="field"><label>Intermediate layers (interpolation stops)</label>
+      <div class="field-row"><button id="palAddIntermediate" type="button">+ Intermediate from active layer…</button></div>
+      <div id="intermediateList"></div>
+      <p class="hint">An intermediate is an outline stop at a weight between the outer masters; interpolation and instance exports pass through it. Capture the active layer at a weight, edit the master, repeat. Use Load to copy a stop back into the active layer for editing (undo protects you).</p>
+    </div>
     <p class="hint">Handbook ref: Palette (p54), Transformations (p56), Interpolation (p150), Filters, Layers. Interpolation needs compatible masters (same contour/node order). Union and Offset flatten curves to lines — undo is available. Use Cut path in the toolbar to open/split a path at the selected node.</p>`;
   qs<HTMLButtonElement>(page, "#palApply").addEventListener("click", () => {
     pushUndo();
@@ -766,18 +772,7 @@ function renderPalette(g: Glyph): void {
   updateInterp();
   qs<HTMLButtonElement>(page, "#palExportInstance").addEventListener("click", async () => {
     const t = (+interpSlider.value || 0) / 100;
-    if (!mastersCompatible(state.font, g.name) && state.font.masters.length >= 2) {
-      setStatus("Instance export needs compatible masters for every glyph — fix outline order first.");
-      return;
-    }
-    const instanceFont = cloneFont(state.font);
-    for (const glyph of instanceFont.glyphs) {
-      const ig = interpolateGlyphAt(instanceFont, glyph.name, t);
-      if (ig) glyph.layers[instanceFont.currentMasterId] = ig.layers[instanceFont.currentMasterId];
-    }
-    const base = (state.font.familyName || "Instance").replace(/[^\w\- ]/g, "").trim() || "Instance";
-    if (!await deliverBytes(`${base}-Instance.ufo.zip`, fontToUfoZip(instanceFont), "application/zip")) { setStatus("Export cancelled."); return; }
-    setStatus(`Exported instance UFO at t=${t.toFixed(2)} (decomposed, with designspace.json manifest).`);
+    await exportInstanceUfo(t, "Instance");
   });
   qs<HTMLButtonElement>(page, "#palFixDir").addEventListener("click", () => {
     pushUndo();
@@ -866,6 +861,39 @@ function renderPalette(g: Glyph): void {
     if (!backup) { setStatus("No layer to back up for the active master."); return; }
     renderAll();
     setStatus(`Backup layer saved: ${backup.name}. Restore it any time from the Palette.`);
+  });
+  const intermediateList = qs<HTMLElement>(page, "#intermediateList");
+  intermediateList.innerHTML = (g.intermediates || []).length
+    ? (g.intermediates || []).map((s, i) => `<div class="field-row"><span>Weight ${s.axisValue} · ${s.paths.length} contour(s)</span><span><button data-inter-load="${i}" type="button">Load</button> <button data-inter-del="${i}" type="button">Delete</button></span></div>`).join("")
+    : '<span class="hint">No intermediate layers yet.</span>';
+  intermediateList.querySelectorAll<HTMLButtonElement>("[data-inter-del]").forEach((btn) => btn.addEventListener("click", () => {
+    pushUndo();
+    (g.intermediates || []).splice(Number(btn.dataset.interDel) || 0, 1);
+    renderAll();
+    setStatus("Intermediate layer deleted.");
+  }));
+  intermediateList.querySelectorAll<HTMLButtonElement>("[data-inter-load]").forEach((btn) => btn.addEventListener("click", () => {
+    const stop = (g.intermediates || [])[Number(btn.dataset.interLoad) || 0];
+    if (!stop) return;
+    pushUndo();
+    layerOf(g).paths = cloneContours(stop.paths);
+    syncBearings(state.font, g);
+    editor.refresh(state.font, g); renderAll();
+    setStatus(`Intermediate at weight ${stop.axisValue} loaded into the active master layer — edit, then capture again to update the stop.`);
+  }));
+  qs<HTMLButtonElement>(page, "#palAddIntermediate").addEventListener("click", () => {
+    if (state.font.masters.length < 2) { setStatus("Add a second master first — intermediates sit between two masters."); return; }
+    const weights = state.font.masters.map((m) => m.weightValue || 0);
+    const lo = Math.min(...weights), hi = Math.max(...weights);
+    const raw = prompt(`Weight for the intermediate layer (between ${lo} and ${hi}):`, String(Math.round((lo + hi) / 2)));
+    if (raw == null) return;
+    const axisValue = Number(raw);
+    if (!Number.isFinite(axisValue) || axisValue <= lo || axisValue >= hi) { setStatus(`Enter a weight strictly between ${lo} and ${hi}.`); return; }
+    pushUndo();
+    g.intermediates = [...(g.intermediates || []).filter((s) => s.axisValue !== axisValue), { axisValue, paths: cloneContours(layerOf(g).paths) }]
+      .sort((a, b) => a.axisValue - b.axisValue);
+    renderAll();
+    setStatus(`Intermediate layer captured at weight ${axisValue} from the active master layer.`);
   });
 }
 
@@ -981,11 +1009,117 @@ function renderFontInfo(): void {
       <div class="field"><label>Cap height</label><input id="fiCap" type="number" value="${f.capHeight}" /></div>
       <div class="field"><label>x-height</label><input id="fiX" type="number" value="${f.xHeight}" /></div>
     </div>
-    <p class="hint"><strong>Masters:</strong> ${f.masters.map((m) => escHtml(`${m.name} (${m.weightValue})`)).join(", ") || "—"}<br/>
-    <strong>Instances:</strong> ${f.instances.map((i) => escHtml(i.name)).join(", ") || "—"}<br/>
-    <strong>Axes:</strong> ${(f.axes || []).map((a) => escHtml(`${a.name} ${a.min}…${a.max} (default ${a.defaultValue})`)).join(", ") || "—"}<br/>
-    <strong>Features:</strong> automatic ${autoFeatures.kernPairs + autoFeatures.groupPairs} kern rule(s), ${autoFeatures.ligatures} ligature(s), ${autoFeatures.markAttachments + autoFeatures.markToMark} mark rule(s); manual code in the Features tab overrides automatic pairs.</p>
-    <p class="hint">Handbook ref: Font Info (p85), Masters (p88), Exports (p92). Exports use the active master. Variable-font axes and custom parameters are deferred.</p>`;
+    <p class="hint"><strong>Features:</strong> automatic ${autoFeatures.kernPairs + autoFeatures.groupPairs} kern rule(s), ${autoFeatures.ligatures} ligature(s), ${autoFeatures.markAttachments + autoFeatures.markToMark} mark rule(s); manual code in the Features tab overrides automatic pairs.</p>
+    <div class="field"><label>Variable axis (first axis feeds the compile service)</label><div id="fiAxes"></div></div>
+    <div class="field"><label>Masters</label><div id="fiMasters"></div></div>
+    <div class="field"><label>Instances</label><div id="fiInstances"></div>
+      <div class="field-row"><button id="fiAddInstance" type="button">+ Instance</button></div>
+    </div>
+    <div class="field"><label>Master compatibility</label><div id="fiCompat"></div></div>
+    <p class="hint">Handbook ref: Font Info (p85), Masters (p88), Instances and Exports (p92). Static exports use the active master; variable export uses the axis and master weights above through the compile service. Custom parameters are still deferred.</p>`;
+  if (!f.axes.length) f.axes = [{ tag: "wght", name: "Weight", min: 400, defaultValue: 400, max: 700 }];
+  const axis = f.axes[0];
+  const axesEl = qs<HTMLElement>(page, "#fiAxes");
+  axesEl.innerHTML = `
+    <div class="field-row">
+      <div class="field"><label>Axis name</label><input data-axis="name" type="text" value="${escHtml(axis.name)}" /></div>
+      <div class="field"><label>Tag</label><input data-axis="tag" type="text" value="${escHtml(axis.tag)}" /></div>
+    </div>
+    <div class="field-row-3">
+      <div class="field"><label>Min</label><input data-axis="min" type="number" value="${axis.min}" /></div>
+      <div class="field"><label>Default</label><input data-axis="defaultValue" type="number" value="${axis.defaultValue}" /></div>
+      <div class="field"><label>Max</label><input data-axis="max" type="number" value="${axis.max}" /></div>
+    </div>
+    <p class="hint">The compile service builds one variable axis from these bounds and the master weights below; keep master weights inside the axis range.</p>`;
+  axesEl.querySelectorAll<HTMLInputElement>("[data-axis]").forEach((input) => bindChange(input, (el) => {
+    const key = input.dataset.axis as "name" | "tag" | "min" | "defaultValue" | "max";
+    if (key === "name" || key === "tag") axis[key] = el.value.trim() || axis[key];
+    else axis[key] = Number(el.value) || 0;
+  }));
+  const mastersEl = qs<HTMLElement>(page, "#fiMasters");
+  mastersEl.innerHTML = f.masters.map((m, i) => `
+    <div class="field-row">
+      <div class="field"><label>Master ${i + 1} name</label><input data-master-name="${m.id}" type="text" value="${escHtml(m.name)}" /></div>
+      <div class="field"><label>Weight (axis)</label><input data-master-weight="${m.id}" type="number" value="${m.weightValue}" /></div>
+    </div>`).join("");
+  mastersEl.querySelectorAll<HTMLInputElement>("[data-master-name]").forEach((input) => bindChange(input, (el) => {
+    const m = f.masters.find((x) => x.id === input.dataset.masterName);
+    if (m && el.value.trim()) m.name = el.value.trim();
+  }));
+  mastersEl.querySelectorAll<HTMLInputElement>("[data-master-weight]").forEach((input) => bindChange(input, (el) => {
+    const m = f.masters.find((x) => x.id === input.dataset.masterWeight);
+    if (m) m.weightValue = Number(el.value) || 0;
+  }));
+  const instancesEl = qs<HTMLElement>(page, "#fiInstances");
+  instancesEl.innerHTML = f.instances.length ? f.instances.map((inst, i) => `
+    <div class="compat-row">
+      <input data-inst-name="${i}" type="text" value="${escHtml(inst.name)}" aria-label="Instance name" />
+      <label class="hint"><input data-inst-active="${i}" type="checkbox" ${inst.active ? "checked" : ""} /> Active</label>
+      <input data-inst-weight="${i}" type="number" value="${instanceAxisWeight(f, inst)}" aria-label="Instance weight" title="Axis weight" />
+      <input data-inst-link="${i}" type="text" value="${escHtml(inst.styleLink || "")}" placeholder="Style link (e.g. Regular)" aria-label="Style link" />
+      <button data-inst-export="${i}" type="button">Export UFO</button>
+      <button data-inst-del="${i}" type="button">Delete</button>
+    </div>`).join("") : '<span class="hint">No instances yet.</span>';
+  instancesEl.querySelectorAll<HTMLInputElement>("[data-inst-name]").forEach((input) => bindChange(input, (el) => {
+    const inst = f.instances[Number(input.dataset.instName) || 0];
+    if (inst && el.value.trim()) inst.name = el.value.trim();
+  }));
+  instancesEl.querySelectorAll<HTMLInputElement>("[data-inst-active]").forEach((input) => input.addEventListener("change", () => {
+    pushUndo();
+    const inst = f.instances[Number(input.dataset.instActive) || 0];
+    if (inst) inst.active = input.checked;
+    renderAll();
+  }));
+  instancesEl.querySelectorAll<HTMLInputElement>("[data-inst-weight]").forEach((input) => bindChange(input, (el) => {
+    const inst = f.instances[Number(input.dataset.instWeight) || 0];
+    if (inst) inst.axisValues = { ...(inst.axisValues || {}), [axis.tag]: Number(el.value) || 0 };
+  }));
+  instancesEl.querySelectorAll<HTMLInputElement>("[data-inst-link]").forEach((input) => bindChange(input, (el) => {
+    const inst = f.instances[Number(input.dataset.instLink) || 0];
+    if (inst) inst.styleLink = el.value.trim();
+  }));
+  instancesEl.querySelectorAll<HTMLButtonElement>("[data-inst-export]").forEach((btn) => btn.addEventListener("click", () => {
+    const inst = f.instances[Number(btn.dataset.instExport) || 0];
+    if (!inst) return;
+    if (!inst.active) setStatus(`Instance ${inst.name} is inactive — exporting anyway as requested.`);
+    void exportInstanceUfo(instanceT(f, instanceAxisWeight(f, inst)), inst.name);
+  }));
+  instancesEl.querySelectorAll<HTMLButtonElement>("[data-inst-del]").forEach((btn) => btn.addEventListener("click", () => {
+    pushUndo();
+    f.instances.splice(Number(btn.dataset.instDel) || 0, 1);
+    renderAll();
+  }));
+  qs<HTMLButtonElement>(page, "#fiAddInstance").addEventListener("click", () => {
+    pushUndo();
+    const master = f.masters[f.masters.length - 1];
+    f.instances.push({ name: `Instance ${f.instances.length + 1}`, masterId: master?.id || f.currentMasterId, active: true, axisValues: { [axis.tag]: master?.weightValue ?? axis.defaultValue }, styleLink: "" });
+    renderAll();
+    setStatus("Instance added — set its name, weight, and style link in Font Info.");
+  });
+  const compatEl = qs<HTMLElement>(page, "#fiCompat");
+  const issues = compatibilityReport(f);
+  if (f.masters.length < 2) {
+    compatEl.innerHTML = '<span class="hint">Add a second master (Glyph menu or Palette) to run the compatibility check.</span>';
+  } else if (!issues.length) {
+    compatEl.innerHTML = '<span class="hint">All glyphs are interpolation-compatible across masters.</span>';
+  } else {
+    const shown = issues.slice(0, 30);
+    compatEl.innerHTML = `<p class="hint">${issues.length} issue(s)${issues.length > shown.length ? ` (first ${shown.length} shown)` : ""}. Fix copies the base master layer over the broken one; redraw that glyph on the target master afterwards.</p>` +
+      shown.map((issue, i) => `<div class="compat-row"><span><strong>${escHtml(issue.glyphName)}</strong> · ${escHtml(issue.masterName)}: ${escHtml(issue.detail)}</span>${!issue.masterId.startsWith("inter@") ? `<button data-compat-fix="${i}" type="button">Fix: copy base layer</button>` : ""}</div>`).join("");
+    compatEl.querySelectorAll<HTMLButtonElement>("[data-compat-fix]").forEach((btn) => btn.addEventListener("click", () => {
+      const issue = shown[Number(btn.dataset.compatFix) || 0];
+      if (!issue) return;
+      const base = [...f.masters].sort((a, b) => (a.weightValue || 0) - (b.weightValue || 0))[0];
+      pushUndo();
+      if (copyLayerBetweenMasters(f, issue.glyphName, base.id, issue.masterId)) {
+        renderAll();
+        setStatus(`Copied the ${base.name} layer of ${issue.glyphName} to ${issue.masterName} — redraw that glyph on ${issue.masterName}.`);
+      } else {
+        state.undoStack.pop();
+        setStatus("Could not apply the fix (source layer missing).");
+      }
+    }));
+  }
   bindChange(page.querySelector("#fiFamily"), (el) => { f.familyName = el.value; });
   bindChange(page.querySelector("#fiVersion"), (el) => { f.version = el.value; });
   bindChange(page.querySelector("#fiUpm"), (el) => { f.unitsPerEm = Math.max(16, +el.value || 1000); });
@@ -1015,6 +1149,24 @@ function setTool(tool: Tool): void {
     : tool === "hand" ? "Hand: drag to pan, wheel to zoom."
     : tool === "text" ? "Text: type in Preview below; red boxes mean the glyph is missing."
     : "Select: drag nodes/handles; Shift-click selects multiple nodes for alignment; arrows nudge the selection.");
+}
+
+async function exportInstanceUfo(t: number, label: string): Promise<void> {
+  const g = currentGlyph();
+  if (g && !mastersCompatible(state.font, g.name) && state.font.masters.length >= 2) {
+    const issueCount = compatibilityReport(state.font).length;
+    setStatus(`Instance export needs compatible masters — ${issueCount} issue(s) listed in Font Info. Fix outline order first.`);
+    return;
+  }
+  const instanceFont = cloneFont(state.font);
+  for (const glyph of instanceFont.glyphs) {
+    const ig = interpolateGlyphAt(instanceFont, glyph.name, t);
+    if (ig) glyph.layers[instanceFont.currentMasterId] = ig.layers[instanceFont.currentMasterId];
+  }
+  const base = (state.font.familyName || "Instance").replace(/[^\w\- ]/g, "").trim() || "Instance";
+  const safeLabel = label.replace(/[^\w\- ]/g, "").trim() || "Instance";
+  if (!await deliverBytes(`${base}-${safeLabel}.ufo.zip`, fontToUfoZip(instanceFont), "application/zip")) { setStatus("Export cancelled."); return; }
+  setStatus(`Exported instance ${safeLabel} UFO at t=${t.toFixed(2)} (decomposed, with designspace.json manifest).`);
 }
 
 function addMasterCopy(): void {
