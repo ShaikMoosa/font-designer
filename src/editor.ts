@@ -191,14 +191,14 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     ];
     const x0 = -300, x1 = (glyph.width || 600) + 300;
     for (const [y, label] of guides) {
-      gWorld.appendChild(el("line", { x1: x0, y1: y, x2: x1, y2: y, class: "metric-line", "stroke-width": lineW }));
+      gWorld.appendChild(el("line", { x1: x0, y1: y, x2: x1, y2: y, class: `metric-line${label === "baseline" ? " metric-baseline" : ""}`, "stroke-width": lineW }));
       const t = el("text", { x: x0 + 4 / state.scale * 10, y, class: "metric-label", transform: `scale(1 -1) translate(0 ${-2 * y})`, "font-size": 11 / state.scale });
       t.textContent = label;
       // Simpler readable label: drawn in screen group below instead.
       t.remove();
     }
-    gWorld.appendChild(el("line", { x1: 0, y1: font.descender - 120, x2: 0, y2: font.ascender + 120, stroke: "#e8a33d", "stroke-width": lineW * 1.4 }));
-    gWorld.appendChild(el("line", { x1: glyph.width, y1: font.descender - 120, x2: glyph.width, y2: font.ascender + 120, stroke: "#e8a33d", "stroke-width": lineW * 1.4 }));
+    gWorld.appendChild(el("line", { x1: 0, y1: font.descender - 120, x2: 0, y2: font.ascender + 120, class: "bearing-line", "stroke-width": lineW * 1.2 }));
+    gWorld.appendChild(el("line", { x1: glyph.width, y1: font.descender - 120, x2: glyph.width, y2: font.ascender + 120, class: "bearing-line", "stroke-width": lineW * 1.2 }));
     if (state.showGuides) {
       const mid = glyph.width / 2;
       const gl = el("line", { x1: mid, y1: font.descender - 80, x2: mid, y2: font.ascender + 80, class: "guide-line", "stroke-width": lineW });
@@ -207,7 +207,7 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     const lay = layer();
     if (!lay) return;
     if (state.ghostD) {
-      const ghost = el("path", { d: state.ghostD, fill: "none", stroke: "#6fca97", "stroke-dasharray": `${6 / state.scale} ${4 / state.scale}`, "stroke-width": 1.4 / state.scale, "vector-effect": "non-scaling-stroke" });
+      const ghost = el("path", { d: state.ghostD, class: "ghost-path", "stroke-dasharray": `${5 / state.scale} ${5 / state.scale}`, "stroke-width": 1.2 / state.scale, "vector-effect": "non-scaling-stroke" });
       gWorld.appendChild(ghost);
     }
     // Closed contours (own + components, resolved) share one path with
@@ -232,7 +232,7 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     }
     // Anchors.
     for (const a of glyph.anchors || []) {
-      gWorld.appendChild(el("circle", { cx: a.x, cy: a.y, r: 7 / state.scale, fill: "none", stroke: "#6fca97", "stroke-width": lineW * 1.4 }));
+      gWorld.appendChild(el("circle", { cx: a.x, cy: a.y, r: 6 / state.scale, class: "anchor-mark", "stroke-width": lineW * 1.2 }));
     }
     svg.appendChild(gWorld);
     // Screen-space labels + nodes (constant size).
@@ -250,21 +250,25 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
         // Handle lines first.
         contour.nodes.forEach((nd, ni) => {
           if (nd.type !== "offcurve") return;
-          const prev = contour.nodes[(ni - 1 + contour.nodes.length) % contour.nodes.length];
-          const next = contour.nodes[(ni + 1) % contour.nodes.length];
-          const anchor = prev.type !== "offcurve" ? prev : next;
+          const prevIndex = (ni - 1 + contour.nodes.length) % contour.nodes.length;
+          const nextIndex = (ni + 1) % contour.nodes.length;
+          const prev = contour.nodes[prevIndex];
+          const next = contour.nodes[nextIndex];
+          const anchorIndex = prev.type !== "offcurve" ? prevIndex : nextIndex;
+          const anchor = contour.nodes[anchorIndex];
           if (!anchor || anchor.type === "offcurve") return;
           const a = fontToScreen(anchor.x, anchor.y), b = fontToScreen(nd.x, nd.y);
-          nodeG.appendChild(el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: "handle-line" }));
+          const active = state.selectionSet.some((selection) => selection.pathIdx === pi && (selection.nodeIdx === ni || selection.nodeIdx === anchorIndex));
+          nodeG.appendChild(el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: `handle-line${active ? " is-active" : ""}` }));
         });
         contour.nodes.forEach((nd, ni) => {
           const s = fontToScreen(nd.x, nd.y);
           const isSel = state.selectionSet.some((s) => s.pathIdx === pi && s.nodeIdx === ni);
           let nodeEl: SVGElement;
           if (nd.type === "offcurve") {
-            nodeEl = el("circle", { cx: s.x, cy: s.y, r: 4.5, class: `node-off${isSel ? " node-sel" : ""}` });
+            nodeEl = el("circle", { cx: s.x, cy: s.y, r: 3.5, class: `node-off${isSel ? " node-sel" : ""}` });
           } else {
-            nodeEl = el("rect", { x: s.x - 4.5, y: s.y - 4.5, width: 9, height: 9, class: `node-on${isSel ? " node-sel" : ""}` });
+            nodeEl = el("rect", { x: s.x - 4, y: s.y - 4, width: 8, height: 8, class: `node-on${isSel ? " node-sel" : ""}` });
           }
           nodeEl.dataset.pathIdx = String(pi); nodeEl.dataset.nodeIdx = String(ni);
           nodeEl.style.cursor = "move";

@@ -146,6 +146,16 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   style click/Ctrl/Shift multi-selection, keyboard navigation, selection-
   aware batch actions, named filter presets, honest selected/visible/total
   counts, and persistent density, sort, filter, scroll, and column state.
+- **Pre-Phase 12 UI Ramp R3 — Edit View refinement:** The compact glyph
+  navigator groups dense thumbnails and switches among All, Related, and
+  Open task scopes. Edit and Text are explicit modes; the canvas reports
+  the active tool/pane and keeps previous/next glyph, zoom, Fit, temporary
+  Space-pan, and Alt+Arrow navigation nearby. The attached information
+  strip shows bearings, width, selection, master, and live kerning for the
+  current proof pair. Preview can collapse, resize, and dock below or to the
+  right with independent remembered dimensions. Construction geometry now
+  gives outlines, selected nodes, handles, metrics, guides, bearings, and
+  ghosts distinct visual priority.
 - **Font View and glyph data (Phase 10):** A built-in glyph-info
   database suggests Unicode, category, production name, and case for
   known glyph names when adding or renaming glyphs. Renaming rewrites

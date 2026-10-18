@@ -142,3 +142,22 @@ test("R2 Font View ships dense Grid/List workflows and persistent expert state",
   assert.match(css, /\.glyph-row-head \{ position: sticky/);
   assert.match(css, /\.fv-col-resizer/);
 });
+
+test("R3 Edit View keeps drawing, spacing, navigation, and proofing continuous", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const renderer = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const editor = readFileSync(new URL("../src/editor.ts", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../src/style.css", import.meta.url), "utf8");
+  for (const id of ["editModeSwitch", "editNavScope", "canvasModeLabel", "infoLeftKern", "infoRightKern", "dockPreviewBtn"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(renderer, /editNavigatorGlyphs/);
+  assert.match(renderer, /function setEditMode/);
+  assert.match(renderer, /function togglePreviewDock/);
+  assert.match(renderer, /ev\.altKey && ev\.key === "ArrowLeft"/);
+  assert.match(renderer, /ev\.code === "Space"/);
+  assert.match(editor, /handle-line\$\{active \? " is-active"/);
+  assert.match(css, /#app\.preview-dock-right #editStage/);
+  assert.match(css, /\.edit-nav-grid/);
+  assert.match(css, /\.metric-line\.metric-baseline/);
+});

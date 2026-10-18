@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createDefaultFont, findGlyph, categoryForGlyph, scriptForGlyph, thumbCanvasSize, fontViewCountText, fontViewSelectionText, updateGlyphSelection } from "../src/model.ts";
+import { createDefaultFont, findGlyph, categoryForGlyph, scriptForGlyph, thumbCanvasSize, fontViewCountText, fontViewSelectionText, updateGlyphSelection, editNavigatorGlyphs } from "../src/model.ts";
 import type { Glyph } from "../src/model.ts";
 
 function glyph(name: string, unicode: number | null, category: string): Glyph {
@@ -60,4 +60,16 @@ test("Font View selection follows replace, Ctrl-toggle, and Shift-range semantic
   assert.deepEqual(updateGlyphSelection(["B", "D"], shown, "B", "toggle", "B"), ["D"]);
   assert.deepEqual(updateGlyphSelection(["B"], shown, "E", "range", "B"), ["B", "C", "D", "E"]);
   assert.deepEqual(updateGlyphSelection(["A"], shown, "D", "range", "missing"), ["D"]);
+});
+
+test("Edit navigator scopes all, related, and open glyph workflows", () => {
+  const font = createDefaultFont();
+  const related = editNavigatorGlyphs(font, "A", "related", ["A"], "");
+  assert.ok(related.some((item) => item.name === "V"));
+  assert.ok(!related.some((item) => item.name === "period"));
+  assert.deepEqual(editNavigatorGlyphs(font, "A", "open", ["A", "period"], "").map((item) => item.name), ["A", "period"]);
+  assert.deepEqual(editNavigatorGlyphs(font, "A", "all", [], "u+0065").map((item) => item.name), ["e"]);
+  const e = findGlyph(font, "e") as Glyph;
+  e.tags = ["proofing"];
+  assert.deepEqual(editNavigatorGlyphs(font, "A", "all", [], "proofing").map((item) => item.name), ["e"]);
 });

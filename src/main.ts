@@ -8,9 +8,10 @@ import {
   GLYPH_CATEGORIES, categoryForGlyph, scriptForGlyph, thumbCanvasSize, fontViewCountText, fontViewSelectionText,
   renameGlyph, moveGlyphInOrder, applyGlyphInfo, glyphMatchesFilter, sortGlyphsForDisplay, GLYPH_FILTERS, parseTags,
   updateGlyphSelection, glyphHasOutline,
+  editNavigatorGlyphs, resolveKern,
   compatibilityReport, copyLayerBetweenMasters, instanceT, instanceAxisWeight, cloneContours,
 } from "./model.ts";
-import type { GlyphFilter, GlyphSortMode } from "./model.ts";
+import type { EditNavigatorScope, GlyphFilter, GlyphSortMode } from "./model.ts";
 import { glyphInfoFor, glyphSuggestionFor, productionNameFor, COLOR_LABELS } from "./glyphinfo.ts";
 import type { AlignMode, Font, Glyph, GlyphLayer } from "./model.ts";
 import { fontToGlyphsJson, glyphsJsonToFont, fontToOpenStep, downloadText, downloadBytes } from "./glyphs-io.ts";
@@ -41,6 +42,8 @@ interface AppState {
   selectedGlyphNames: Set<string>; selectionAnchorName: string; focusedGlyphName: string;
   fontViewScroll: Record<"grid" | "list", number>;
   activeSavedFilterId: string;
+  editNavScope: EditNavigatorScope;
+  editMode: "edit" | "text";
 }
 
 interface SavedFontFilter {
@@ -66,9 +69,12 @@ interface WorkspacePrefs {
   leftPanel: number;
   rightPanel: number;
   previewHeight: number;
+  previewWidth: number;
+  previewDock: "bottom" | "right";
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   previewCollapsed: boolean;
+  editNavScope: EditNavigatorScope;
 }
 
 const WORKSPACE_PREFS_KEY = "glyphs-windows.workspace.v1";
@@ -81,9 +87,12 @@ const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
   leftPanel: 220,
   rightPanel: 286,
   previewHeight: 115,
+  previewWidth: 300,
+  previewDock: "bottom",
   leftCollapsed: false,
   rightCollapsed: false,
   previewCollapsed: false,
+  editNavScope: "all",
 };
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -98,9 +107,12 @@ function loadWorkspacePrefs(): WorkspacePrefs {
       leftPanel: clampNumber(stored.leftPanel, DEFAULT_WORKSPACE_PREFS.leftPanel, 176, 340),
       rightPanel: clampNumber(stored.rightPanel, DEFAULT_WORKSPACE_PREFS.rightPanel, 236, 380),
       previewHeight: clampNumber(stored.previewHeight, DEFAULT_WORKSPACE_PREFS.previewHeight, 82, 360),
+      previewWidth: clampNumber(stored.previewWidth, DEFAULT_WORKSPACE_PREFS.previewWidth, 230, 520),
+      previewDock: stored.previewDock === "right" ? "right" : "bottom",
       leftCollapsed: stored.leftCollapsed === true,
       rightCollapsed: stored.rightCollapsed === true,
       previewCollapsed: stored.previewCollapsed === true,
+      editNavScope: stored.editNavScope === "related" || stored.editNavScope === "open" ? stored.editNavScope : "all",
     };
   } catch {
     return { ...DEFAULT_WORKSPACE_PREFS };
@@ -147,6 +159,8 @@ const state: AppState = {
   selectedGlyphNames: new Set(["A"]), selectionAnchorName: "A", focusedGlyphName: "A",
   fontViewScroll: { grid: 0, list: 0 },
   activeSavedFilterId: "",
+  editNavScope: workspacePrefs.editNavScope,
+  editMode: "edit",
 };
 
 function persistFontViewPrefs(): void {
@@ -212,15 +226,26 @@ const editorHooks: EditorHooks = {
 };
 
 let activeEd: Editor;
+function activateEditor(next: Editor, surface: SVGSVGElement): void {
+  activeEd = next;
+  document.querySelectorAll<SVGSVGElement>("#panes > svg").forEach((svg) => svg.classList.toggle("is-active-pane", svg === surface));
+  updateSelectionReadout();
+}
+
+function updateSelectionReadout(): void {
+  const count = activeEd?.getSelectionCount?.() || 0;
+  $("#infoSelection").textContent = count ? `${count} node${count === 1 ? "" : "s"} selected` : "No nodes selected";
+}
+
 const editor = createEditor($<SVGSVGElement>("#editorSvg"), {
   ...editorHooks,
-  onActivate() { activeEd = editor; },
-  onRender(info) { if (!activeEd || activeEd === editor) updateZoomReadout(info.scale); },
+  onActivate() { activateEditor(editor, $<SVGSVGElement>("#editorSvg")); },
+  onRender(info) { if (!activeEd || activeEd === editor) { updateZoomReadout(info.scale); updateSelectionReadout(); } },
 });
 const editorB = createEditor($<SVGSVGElement>("#editorSvgB"), {
   ...editorHooks,
-  onActivate() { activeEd = editorB; },
-  onRender(info) { if (activeEd === editorB) updateZoomReadout(info.scale); },
+  onActivate() { activateEditor(editorB, $<SVGSVGElement>("#editorSvgB")); },
+  onRender(info) { if (activeEd === editorB) { updateZoomReadout(info.scale); updateSelectionReadout(); } },
 });
 activeEd = editor;
 
@@ -243,6 +268,18 @@ function updateCanvasHud(): void {
   $("#canvasGlyphLabel").textContent = state.currentGlyphName || "—";
   $<HTMLButtonElement>("#previousGlyphBtn").disabled = glyphIndex <= 0;
   $<HTMLButtonElement>("#nextGlyphBtn").disabled = glyphIndex < 0 || glyphIndex >= state.font.glyphs.length - 1;
+}
+
+function updateSpacingContext(): void {
+  const names = shapeText(state.font, $<HTMLInputElement>("#previewText").value || "")
+    .map((item) => item.name)
+    .filter((name): name is string => Boolean(name));
+  const index = names.indexOf(state.currentGlyphName);
+  const left = index > 0 ? names[index - 1] : "";
+  const right = index >= 0 && index < names.length - 1 ? names[index + 1] : "";
+  $("#infoLeftKern").textContent = left ? `${left}/${state.currentGlyphName} ${resolveKern(state.font, left, state.currentGlyphName)}` : "—";
+  $("#infoRightKern").textContent = right ? `${state.currentGlyphName}/${right} ${resolveKern(state.font, state.currentGlyphName, right)}` : "—";
+  $("#infoKernContext").classList.toggle("is-empty", !left && !right);
 }
 
 function navigateGlyph(delta: -1 | 1): void {
@@ -425,7 +462,11 @@ function renderGlyphDetails(): void {
 function glyphsForView(settings: Pick<SavedFontFilter, "query" | "category" | "language" | "filter" | "sort">): Glyph[] {
   const q = settings.query.trim().toLowerCase();
   const filtered = state.font.glyphs.filter((g) =>
-    (!q || g.name.toLowerCase().includes(q))
+    (!q || [
+      g.name,
+      g.unicode == null ? "" : `u+${g.unicode.toString(16).padStart(4, "0")}`,
+      categoryForGlyph(g), scriptForGlyph(g), g.productionName || "", ...(g.tags || []),
+    ].join(" ").toLowerCase().includes(q))
     && (settings.category === "All" || categoryForGlyph(g) === settings.category)
     && (settings.language === "All" || scriptForGlyph(g) === settings.language)
     && glyphMatchesFilter(state.font, g, settings.filter));
@@ -444,6 +485,17 @@ function currentFontViewSettings(): Pick<SavedFontFilter, "query" | "category" |
 
 function filteredGlyphs(): Glyph[] {
   return glyphsForView(currentFontViewSettings());
+}
+
+function visibleGlyphs(): Glyph[] {
+  if (state.workspace === "font") return filteredGlyphs();
+  return editNavigatorGlyphs(
+    state.font,
+    state.currentGlyphName,
+    state.editNavScope,
+    state.openTabs,
+    $<HTMLInputElement>("#glyphSearch").value,
+  );
 }
 
 function glyphViewStatus(glyph: Glyph): { state: "outline" | "component" | "empty"; label: string } {
@@ -541,7 +593,7 @@ function setupListColumnResizers(head: HTMLElement, grid: HTMLElement): void {
   });
 }
 
-function updateFontViewSelectionUI(shown = filteredGlyphs()): void {
+function updateFontViewSelectionUI(shown = visibleGlyphs()): void {
   normalizeFontViewSelection();
   const selectedCount = state.selectedGlyphNames.size;
   const items = [...document.querySelectorAll<HTMLElement>("#glyphGrid [data-glyph-name]")];
@@ -555,7 +607,11 @@ function updateFontViewSelectionUI(shown = filteredGlyphs()): void {
   const active = items.find((item) => item.dataset.glyphName === state.focusedGlyphName);
   const grid = $<HTMLElement>("#glyphGrid");
   if (active) grid.setAttribute("aria-activedescendant", active.id); else grid.removeAttribute("aria-activedescendant");
-  $("#glyphCount").textContent = fontViewSelectionText(selectedCount, shown.length, state.font.glyphs.length);
+  const countText = state.workspace === "font"
+    ? fontViewSelectionText(selectedCount, shown.length, state.font.glyphs.length)
+    : `${shown.length}/${state.font.glyphs.length}`;
+  $("#glyphCount").textContent = countText;
+  $("#glyphCount").setAttribute("title", fontViewSelectionText(selectedCount, shown.length, state.font.glyphs.length));
   $("#fvSelectionHint").textContent = selectedCount ? `${selectedCount} selected` : "No selection";
   $<HTMLButtonElement>("#applyInfoBtn").disabled = selectedCount === 0;
   $<HTMLButtonElement>("#batchCategoryBtn").disabled = selectedCount === 0;
@@ -592,7 +648,7 @@ function renderFontView() {
   const previousMode = grid.dataset.viewMode as "grid" | "list" | undefined;
   if (previousMode) state.fontViewScroll[previousMode] = grid.scrollTop;
   grid.querySelectorAll<HTMLCanvasElement>("canvas").forEach((canvas) => thumbnailObserver?.unobserve(canvas));
-  const shown = filteredGlyphs();
+  const shown = visibleGlyphs();
   renderNavList($("#categoryNav"), "All",
     GLYPH_CATEGORIES.map((name) => ({ name, count: state.font.glyphs.filter((g) => categoryForGlyph(g) === name).length })),
     state.fontCategory, (name) => { state.fontCategory = name; state.activeSavedFilterId = ""; state.fontViewScroll[state.fontViewMode] = 0; renderFontView(); });
@@ -605,13 +661,60 @@ function renderFontView() {
   $("#fontViewTitle").textContent = titleParts.length ? titleParts.join(", ") : "All glyphs";
   const sortLabel = state.glyphSort === "name" ? "Name order" : state.glyphSort === "unicode" ? "Unicode order" : "Font order";
   $("#fontViewSubtitle").textContent = state.fontViewMode === "list" ? `${sortLabel} · resizable columns` : `${sortLabel} · ${state.cellSize}px cells`;
+  const search = $<HTMLInputElement>("#glyphSearch");
+  search.placeholder = state.workspace === "font" ? "Search glyphs by name, Unicode, tag" : "Find glyph, Unicode, tag";
+  document.querySelectorAll<HTMLButtonElement>("[data-nav-scope]").forEach((button) => {
+    const active = button.dataset.navScope === state.editNavScope;
+    button.classList.toggle("is-on", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  $("#editNavContext").textContent = `${shown.length} glyph${shown.length === 1 ? "" : "s"}`;
   grid.style.setProperty("--fv-cell", `${state.cellSize}px`);
-  grid.className = `glyph-grid${state.fontViewMode === "list" ? " list-mode" : ""}${state.cellSize < 78 ? " is-compact" : ""}${state.cellSize >= 124 ? " is-roomy" : ""}`;
+  grid.className = state.workspace === "font"
+    ? `glyph-grid${state.fontViewMode === "list" ? " list-mode" : ""}${state.cellSize < 78 ? " is-compact" : ""}${state.cellSize >= 124 ? " is-roomy" : ""}`
+    : "glyph-grid edit-nav-grid";
   grid.dataset.viewMode = state.fontViewMode;
   grid.setAttribute("role", state.fontViewMode === "list" && state.workspace === "font" ? "grid" : "listbox");
   applyListColumnStyles(grid);
   grid.innerHTML = "";
-  if (state.fontViewMode === "list" && state.workspace === "font") {
+  if (state.workspace !== "font") {
+    const groups = new Map<string, Glyph[]>();
+    for (const glyph of shown) {
+      const group = categoryForGlyph(glyph);
+      groups.set(group, [...(groups.get(group) || []), glyph]);
+    }
+    let index = 0;
+    for (const [group, glyphs] of groups) {
+      const heading = document.createElement("div");
+      heading.className = "edit-nav-group";
+      heading.innerHTML = `<span>${escHtml(group)}</span><span>${glyphs.length}</span>`;
+      grid.appendChild(heading);
+      for (const glyph of glyphs) {
+        const status = glyphViewStatus(glyph);
+        const cell = document.createElement("div");
+        cell.className = `edit-nav-cell${glyph.name === state.currentGlyphName ? " is-sel is-current" : ""}`;
+        cell.setAttribute("role", "option");
+        cell.title = `${glyph.name} · ${status.label} · width ${glyph.width}`;
+        const canvas = document.createElement("canvas");
+        cell.appendChild(canvas);
+        const label = document.createElement("span");
+        label.className = "edit-nav-name";
+        label.textContent = glyph.name;
+        cell.appendChild(label);
+        const meta = document.createElement("span");
+        meta.className = "edit-nav-meta";
+        meta.textContent = glyph.unicode == null ? `${glyph.width}` : glyph.unicode.toString(16).toUpperCase().padStart(4, "0");
+        cell.appendChild(meta);
+        const dot = document.createElement("i");
+        dot.className = `edit-nav-status is-${status.state}`;
+        dot.setAttribute("aria-label", status.label);
+        cell.appendChild(dot);
+        bindFontViewItem(cell, glyph, shown, index++);
+        grid.appendChild(cell);
+        drawThumb(canvas, glyph);
+      }
+    }
+  } else if (state.fontViewMode === "list") {
     const head = document.createElement("div");
     head.className = "glyph-row glyph-row-head";
     head.setAttribute("role", "row");
@@ -631,19 +734,6 @@ function renderFontView() {
       fragment.appendChild(row);
     });
     grid.appendChild(fragment);
-  } else if (state.fontViewMode === "list") {
-    const head = document.createElement("div");
-    head.className = "glyph-row-compact glyph-row-head";
-    head.innerHTML = "<span>Name</span><span>Unicode</span><span>Width</span>";
-    grid.appendChild(head);
-    shown.forEach((g, idx) => {
-      const row = document.createElement("div");
-      row.className = `glyph-row-compact${g.name === state.currentGlyphName ? " is-sel" : ""}`;
-      row.title = `${g.name} — double-click to edit`;
-      row.innerHTML = `<span class="gname">${escHtml(g.name)}</span><span>${g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")}` : "—"}</span><span>${g.width}</span>`;
-      bindFontViewItem(row, g, shown, idx);
-      grid.appendChild(row);
-    });
   } else {
     const fragment = document.createDocumentFragment();
     shown.forEach((g, idx) => {
@@ -815,6 +905,8 @@ function renderHeader() {
     ? `${state.font.familyName} · ${g.name} · width ${g.width} · LSB ${g.lsb} RSB ${g.rsb} · ${state.font.glyphs.length} glyphs`
     : state.font.familyName;
   updateCanvasHud();
+  updateSpacingContext();
+  updateSelectionReadout();
 }
 
 function renderDynamic(refitSide = true) {
@@ -849,6 +941,7 @@ function renderPreview() {
   const s = size / upm;
   // Shaping subset: ligatures, feature pos, pair + group kerning (Features tab).
   const shaped = shapeText(state.font, text);
+  updateSpacingContext();
   let cursor = 12;
   let lastBaseX = 12;
   // Height grows with the proof size so caps/descenders are never clipped.
@@ -1603,19 +1696,55 @@ function renderSide(): void {
   renderFontInfo();
 }
 
-function setTool(tool: Tool): void {
-  editor.setTool(tool);
-  editorB.setTool(tool);
+let lastEditTool: Exclude<Tool, "text"> = "select";
+
+function editorToolLabel(tool: Tool): string {
+  return tool.charAt(0).toUpperCase() + tool.slice(1);
+}
+
+function syncEditModeControls(tool: Tool): void {
+  $("#app").classList.toggle("text-mode", state.editMode === "text");
+  document.querySelectorAll<HTMLButtonElement>("[data-edit-mode]").forEach((button) => {
+    const active = button.dataset.editMode === state.editMode;
+    button.classList.toggle("is-on", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((b) => {
     const active = b.dataset.tool === tool;
     b.classList.toggle("is-on", active);
     b.setAttribute("aria-pressed", String(active));
   });
+  $("#canvasModeLabel").textContent = state.editMode === "text" ? "Text proof" : `Edit · ${editorToolLabel(tool)}`;
+}
+
+function setEditMode(mode: "edit" | "text", focusPreview = true): void {
+  state.editMode = mode;
+  const tool: Tool = mode === "text" ? "text" : lastEditTool;
+  editor.setTool(tool);
+  editorB.setTool(tool);
+  syncEditModeControls(tool);
+  if (mode === "text" && focusPreview) {
+    if (workspacePrefs.previewCollapsed) toggleChromePanel("preview-collapsed", $<HTMLButtonElement>("#togglePreviewBtn"));
+    const input = $<HTMLInputElement>("#previewText");
+    input.focus();
+    input.select();
+    setStatus("Text mode: type a proof string; glyph pairs and kerning update in the canvas information bar.");
+  } else if (mode === "edit") {
+    setStatus(`${editorToolLabel(tool)} tool active in Edit mode.`);
+  }
+}
+
+function setTool(tool: Tool): void {
+  if (tool === "text") { setEditMode("text"); return; }
+  lastEditTool = tool;
+  state.editMode = "edit";
+  editor.setTool(tool);
+  editorB.setTool(tool);
+  syncEditModeControls(tool);
   setStatus(tool === "pen" ? "Pen: click to place nodes, drag to pull handles, click the first node to close."
     : tool === "pencil" ? "Pencil: drag a freehand stroke — it becomes an editable open contour on release."
     : tool === "measure" ? "Measure: click two points (snaps to nodes); the readout shows distance and angle. Nothing is modified."
-    : tool === "hand" ? "Hand: drag to pan, wheel to zoom."
-    : tool === "text" ? "Text: type in Preview below; red boxes mean the glyph is missing."
+    : tool === "hand" ? "Hand: drag to pan, wheel to zoom. Hold Space from another tool for a temporary pan."
     : "Select: drag nodes/handles; Shift-click selects multiple nodes for alignment; arrows nudge the selection.");
 }
 
@@ -1940,7 +2069,7 @@ function dispatch(cmd: string): void {
   }
 }
 
-type PaneDimension = "leftPanel" | "rightPanel" | "previewHeight";
+type PaneDimension = "leftPanel" | "rightPanel" | "previewHeight" | "previewWidth";
 
 function persistWorkspacePrefs(): void {
   try {
@@ -1953,6 +2082,10 @@ function persistWorkspacePrefs(): void {
 function dimensionLimits(dimension: PaneDimension): { min: number; max: number } {
   if (dimension === "leftPanel") return { min: 176, max: 340 };
   if (dimension === "rightPanel") return { min: 236, max: 380 };
+  if (dimension === "previewWidth") {
+    const editWidth = $("#editview").getBoundingClientRect().width;
+    return { min: 230, max: Math.max(280, Math.min(520, Math.round(editWidth * .48) || 520)) };
+  }
   const editHeight = $("#editview").getBoundingClientRect().height;
   return { min: 82, max: Math.max(120, Math.min(360, Math.round(editHeight * .48) || 360)) };
 }
@@ -1961,7 +2094,9 @@ function applyPaneDimension(dimension: PaneDimension, value: number, commit = fa
   const { min, max } = dimensionLimits(dimension);
   const next = clampNumber(value, workspacePrefs[dimension], min, max);
   workspacePrefs[dimension] = next;
-  const cssName = dimension === "leftPanel" ? "--left-panel-pref" : dimension === "rightPanel" ? "--right-panel-pref" : "--preview-height";
+  const cssName = dimension === "leftPanel" ? "--left-panel-pref"
+    : dimension === "rightPanel" ? "--right-panel-pref"
+      : dimension === "previewWidth" ? "--preview-width" : "--preview-height";
   ($<HTMLElement>("#app")).style.setProperty(cssName, `${next}px`);
   const separator = dimension === "leftPanel" ? $("#leftResize") : dimension === "rightPanel" ? $("#rightResize") : $("#previewResize");
   separator.setAttribute("aria-valuenow", String(next));
@@ -1993,6 +2128,11 @@ function updateChromeToggleLabels(): void {
   const previewLabel = workspacePrefs.previewCollapsed ? "Expand preview" : "Collapse preview";
   previewButton.title = previewLabel;
   previewButton.setAttribute("aria-label", previewLabel);
+  const dockButton = $<HTMLButtonElement>("#dockPreviewBtn");
+  const dockLabel = workspacePrefs.previewDock === "bottom" ? "Dock preview on the right" : "Dock preview below the canvas";
+  dockButton.title = dockLabel;
+  dockButton.setAttribute("aria-label", dockLabel);
+  $("#previewDockLabel").textContent = workspacePrefs.previewDock === "bottom" ? "Bottom" : "Right";
 }
 
 function syncChromePrefs(): void {
@@ -2000,9 +2140,11 @@ function syncChromePrefs(): void {
   app.style.setProperty("--left-panel-pref", `${workspacePrefs.leftPanel}px`);
   app.style.setProperty("--right-panel-pref", `${workspacePrefs.rightPanel}px`);
   app.style.setProperty("--preview-height", `${workspacePrefs.previewHeight}px`);
+  app.style.setProperty("--preview-width", `${workspacePrefs.previewWidth}px`);
   app.classList.toggle("left-collapsed", workspacePrefs.leftCollapsed);
   app.classList.toggle("right-collapsed", workspacePrefs.rightCollapsed);
   app.classList.toggle("preview-collapsed", workspacePrefs.previewCollapsed);
+  app.classList.toggle("preview-dock-right", workspacePrefs.previewDock === "right");
   for (const [selector, expanded] of [
     ["#toggleLeftBtn", !workspacePrefs.leftCollapsed],
     ["#toggleRightBtn", !workspacePrefs.rightCollapsed],
@@ -2016,6 +2158,15 @@ function syncChromePrefs(): void {
   applyPaneDimension("leftPanel", workspacePrefs.leftPanel);
   applyPaneDimension("rightPanel", workspacePrefs.rightPanel);
   applyPaneDimension("previewHeight", workspacePrefs.previewHeight);
+  applyPaneDimension("previewWidth", workspacePrefs.previewWidth);
+  const previewResize = $("#previewResize");
+  const previewDimension: PaneDimension = workspacePrefs.previewDock === "right" ? "previewWidth" : "previewHeight";
+  const previewLimits = dimensionLimits(previewDimension);
+  previewResize.setAttribute("aria-orientation", workspacePrefs.previewDock === "right" ? "vertical" : "horizontal");
+  previewResize.setAttribute("aria-label", `Resize ${workspacePrefs.previewDock}-docked preview`);
+  previewResize.setAttribute("aria-valuemin", String(previewLimits.min));
+  previewResize.setAttribute("aria-valuemax", String(previewLimits.max));
+  previewResize.setAttribute("aria-valuenow", String(workspacePrefs[previewDimension]));
 }
 
 function resetWorkspaceLayout(): void {
@@ -2031,21 +2182,64 @@ function resetWorkspaceLayout(): void {
 
 function setupPaneResizer(selector: string, dimension: PaneDimension): void {
   const separator = $<HTMLElement>(selector);
-  const isPreview = dimension === "previewHeight";
   separator.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     event.preventDefault();
-    const origin = isPreview ? event.clientY : event.clientX;
+    const origin = event.clientX;
     const initial = workspacePrefs[dimension];
     separator.setPointerCapture(event.pointerId);
     separator.classList.add("is-dragging");
     document.body.classList.add("is-resizing");
-    document.body.classList.toggle("is-resizing-preview", isPreview);
     const move = (nextEvent: PointerEvent) => {
-      const pointer = isPreview ? nextEvent.clientY : nextEvent.clientX;
+      const pointer = nextEvent.clientX;
       const delta = pointer - origin;
-      const signedDelta = dimension === "rightPanel" || isPreview ? -delta : delta;
+      const signedDelta = dimension === "rightPanel" ? -delta : delta;
       applyPaneDimension(dimension, initial + signedDelta);
+    };
+    const finish = () => {
+      separator.removeEventListener("pointermove", move);
+      separator.removeEventListener("pointerup", finish);
+      separator.removeEventListener("pointercancel", finish);
+      separator.classList.remove("is-dragging");
+      document.body.classList.remove("is-resizing");
+      applyPaneDimension(dimension, workspacePrefs[dimension], true);
+    };
+    separator.addEventListener("pointermove", move);
+    separator.addEventListener("pointerup", finish);
+    separator.addEventListener("pointercancel", finish);
+  });
+  separator.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? 32 : 8;
+    let delta = 0;
+    if (dimension === "leftPanel") delta = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
+    if (dimension === "rightPanel") delta = event.key === "ArrowLeft" ? step : event.key === "ArrowRight" ? -step : 0;
+    const { min, max } = dimensionLimits(dimension);
+    if (event.key === "Home") delta = min - workspacePrefs[dimension];
+    if (event.key === "End") delta = max - workspacePrefs[dimension];
+    if (!delta) return;
+    event.preventDefault();
+    applyPaneDimension(dimension, workspacePrefs[dimension] + delta, true);
+  });
+  separator.addEventListener("dblclick", () => {
+    applyPaneDimension(dimension, DEFAULT_WORKSPACE_PREFS[dimension], true);
+  });
+}
+
+function setupPreviewResizer(): void {
+  const separator = $<HTMLElement>("#previewResize");
+  separator.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const right = workspacePrefs.previewDock === "right";
+    const dimension: PaneDimension = right ? "previewWidth" : "previewHeight";
+    const origin = right ? event.clientX : event.clientY;
+    const initial = workspacePrefs[dimension];
+    separator.setPointerCapture(event.pointerId);
+    separator.classList.add("is-dragging");
+    document.body.classList.add("is-resizing", "is-resizing-preview");
+    const move = (nextEvent: PointerEvent) => {
+      const pointer = right ? nextEvent.clientX : nextEvent.clientY;
+      applyPaneDimension(dimension, initial - (pointer - origin));
     };
     const finish = () => {
       separator.removeEventListener("pointermove", move);
@@ -2060,11 +2254,12 @@ function setupPaneResizer(selector: string, dimension: PaneDimension): void {
     separator.addEventListener("pointercancel", finish);
   });
   separator.addEventListener("keydown", (event) => {
+    const right = workspacePrefs.previewDock === "right";
+    const dimension: PaneDimension = right ? "previewWidth" : "previewHeight";
     const step = event.shiftKey ? 32 : 8;
     let delta = 0;
-    if (dimension === "leftPanel") delta = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
-    if (dimension === "rightPanel") delta = event.key === "ArrowLeft" ? step : event.key === "ArrowRight" ? -step : 0;
-    if (dimension === "previewHeight") delta = event.key === "ArrowUp" ? step : event.key === "ArrowDown" ? -step : 0;
+    if (right) delta = event.key === "ArrowLeft" ? step : event.key === "ArrowRight" ? -step : 0;
+    else delta = event.key === "ArrowUp" ? step : event.key === "ArrowDown" ? -step : 0;
     const { min, max } = dimensionLimits(dimension);
     if (event.key === "Home") delta = min - workspacePrefs[dimension];
     if (event.key === "End") delta = max - workspacePrefs[dimension];
@@ -2073,8 +2268,20 @@ function setupPaneResizer(selector: string, dimension: PaneDimension): void {
     applyPaneDimension(dimension, workspacePrefs[dimension] + delta, true);
   });
   separator.addEventListener("dblclick", () => {
+    const dimension: PaneDimension = workspacePrefs.previewDock === "right" ? "previewWidth" : "previewHeight";
     applyPaneDimension(dimension, DEFAULT_WORKSPACE_PREFS[dimension], true);
   });
+}
+
+function togglePreviewDock(): void {
+  workspacePrefs.previewDock = workspacePrefs.previewDock === "bottom" ? "right" : "bottom";
+  syncChromePrefs();
+  persistWorkspacePrefs();
+  requestAnimationFrame(() => {
+    editor.resizeViewport();
+    if (state.splitView) editorB.resizeViewport();
+  });
+  setStatus(`Preview docked ${workspacePrefs.previewDock === "bottom" ? "below the canvas" : "to the right of the canvas"}.`);
 }
 
 function toggleChromePanel(className: "left-collapsed" | "right-collapsed" | "preview-collapsed", button: HTMLButtonElement): void {
@@ -2094,6 +2301,16 @@ function toggleChromePanel(className: "left-collapsed" | "right-collapsed" | "pr
 
 document.querySelectorAll<HTMLButtonElement>("[data-cmd]").forEach((b) => b.addEventListener("click", () => { const cmd = b.dataset.cmd; if (cmd) dispatch(cmd); }));
 document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((b) => b.addEventListener("click", () => setTool((b.dataset.tool || "select") as Tool)));
+document.querySelectorAll<HTMLButtonElement>("[data-edit-mode]").forEach((button) => button.addEventListener("click", () => {
+  setEditMode(button.dataset.editMode === "text" ? "text" : "edit");
+}));
+document.querySelectorAll<HTMLButtonElement>("[data-nav-scope]").forEach((button) => button.addEventListener("click", () => {
+  state.editNavScope = (button.dataset.navScope || "all") as EditNavigatorScope;
+  workspacePrefs.editNavScope = state.editNavScope;
+  persistWorkspacePrefs();
+  renderFontView();
+  setStatus(`Glyph navigator scope: ${button.textContent?.trim() || "All"}.`);
+}));
 document.querySelectorAll<HTMLButtonElement>("[data-side]").forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll<HTMLButtonElement>("[data-side]").forEach((x) => x.classList.toggle("is-on", x === b));
   document.querySelectorAll<HTMLElement>(".side-page").forEach((p) => p.classList.toggle("is-on", p.id === `side-${b.dataset.side}`));
@@ -2229,12 +2446,13 @@ $("#collapsePreviewBtn").addEventListener("click", () => {
 });
 setupPaneResizer("#leftResize", "leftPanel");
 setupPaneResizer("#rightResize", "rightPanel");
-setupPaneResizer("#previewResize", "previewHeight");
+setupPreviewResizer();
 $("#previousGlyphBtn").addEventListener("click", () => navigateGlyph(-1));
 $("#nextGlyphBtn").addEventListener("click", () => navigateGlyph(1));
 $("#zoomOutBtn").addEventListener("click", () => activeEd.zoomBy(1 / 1.25));
 $("#zoomInBtn").addEventListener("click", () => activeEd.zoomBy(1.25));
 $("#zoomFitBtn").addEventListener("click", () => activeEd.zoomFit());
+$("#dockPreviewBtn").addEventListener("click", togglePreviewDock);
 $<HTMLInputElement>("#cellSize").value = String(state.cellSize);
 $<HTMLInputElement>("#cellSize").addEventListener("input", (ev) => {
   state.cellSize = +(ev.target as HTMLInputElement).value || 88;
@@ -2293,6 +2511,7 @@ document.querySelectorAll<HTMLButtonElement>(".tool-popover .tool-menu button").
   button.addEventListener("click", () => button.closest("details")?.removeAttribute("open"));
 });
 
+let spacePanning = false;
 document.addEventListener("keydown", (ev) => {
   const tag = document.activeElement?.tagName;
   const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
@@ -2305,6 +2524,16 @@ document.addEventListener("keydown", (ev) => {
   if ((mod && ev.key.toLowerCase() === "y") || (mod && ev.shiftKey && ev.key.toLowerCase() === "z")) { ev.preventDefault(); redo(); return; }
   if (mod && ev.altKey && ev.key === "0") { ev.preventDefault(); resetWorkspaceLayout(); return; }
   if (typing) return;
+  if (ev.altKey && ev.key === "ArrowLeft") { ev.preventDefault(); navigateGlyph(-1); return; }
+  if (ev.altKey && ev.key === "ArrowRight") { ev.preventDefault(); navigateGlyph(1); return; }
+  if (ev.code === "Space" && state.editMode === "edit" && !spacePanning) {
+    ev.preventDefault();
+    spacePanning = true;
+    editor.setTool("hand"); editorB.setTool("hand");
+    document.body.classList.add("is-space-panning");
+    $("#canvasModeLabel").textContent = "Edit · Temporary pan";
+    return;
+  }
   if (mod && (ev.key === "+" || ev.key === "=")) { ev.preventDefault(); activeEd.zoomBy(1.25); return; }
   if (mod && ev.key === "-") { ev.preventDefault(); activeEd.zoomBy(1 / 1.25); return; }
   if (mod && ev.key === "0") { ev.preventDefault(); activeEd.zoomFit(); return; }
@@ -2320,7 +2549,15 @@ document.addEventListener("keydown", (ev) => {
   if (k === "b") setTool("pencil");
   if (k === "m") setTool("measure");
   if (k === "h") setTool("hand");
-  if (k === "t") { setTool("text"); $<HTMLInputElement>("#previewText").focus(); }
+  if (k === "t") setEditMode("text");
+});
+document.addEventListener("keyup", (ev) => {
+  if (ev.code !== "Space" || !spacePanning) return;
+  spacePanning = false;
+  document.body.classList.remove("is-space-panning");
+  const tool: Tool = state.editMode === "text" ? "text" : lastEditTool;
+  editor.setTool(tool); editorB.setTool(tool);
+  syncEditModeControls(tool);
 });
 
 // Menus: click toggles (touch/keyboard); moving the mouse across the

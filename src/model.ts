@@ -284,6 +284,43 @@ export function scriptForGlyph(glyph: Glyph): string {
   return "Other";
 }
 
+export type EditNavigatorScope = "all" | "related" | "open";
+
+/** Compact Edit View navigator set. "Related" keeps the current glyph,
+ * glyphs from the same script/category, component relationships, and shared
+ * kerning groups together so spacing and construction work stays local. */
+export function editNavigatorGlyphs(font: Font, currentName: string, scope: EditNavigatorScope, openNames: string[], query = ""): Glyph[] {
+  const current = findGlyph(font, currentName);
+  const open = new Set(openNames);
+  const related = new Set<string>([currentName]);
+  if (current) {
+    const currentCategory = categoryForGlyph(current);
+    const currentScript = scriptForGlyph(current);
+    const componentNames = new Set((current.components || []).map((component) => component.glyph));
+    for (const glyph of font.glyphs) {
+      const usesCurrent = (glyph.components || []).some((component) => component.glyph === currentName);
+      const sharesGroup = Boolean(
+        (current.kerningGroupLeft && glyph.kerningGroupLeft === current.kerningGroupLeft)
+        || (current.kerningGroupRight && glyph.kerningGroupRight === current.kerningGroupRight),
+      );
+      if ((categoryForGlyph(glyph) === currentCategory && scriptForGlyph(glyph) === currentScript)
+        || componentNames.has(glyph.name) || usesCurrent || sharesGroup) related.add(glyph.name);
+    }
+  }
+  const needle = query.trim().toLowerCase();
+  return font.glyphs.filter((glyph) => {
+    if (scope === "open" && !open.has(glyph.name)) return false;
+    if (scope === "related" && !related.has(glyph.name)) return false;
+    if (!needle) return true;
+    const unicode = glyph.unicode == null ? "" : `u+${glyph.unicode.toString(16).padStart(4, "0")}`;
+    const haystack = [
+      glyph.name, unicode, categoryForGlyph(glyph), scriptForGlyph(glyph),
+      glyph.productionName || "", ...(glyph.tags || []),
+    ].join(" ").toLowerCase();
+    return haystack.includes(needle);
+  });
+}
+
 /** Canvas backing size for a Font View thumbnail at the given cell size. */
 export function thumbCanvasSize(cellSize: number, devicePixelRatio = 1): { width: number; height: number } {
   const base = Math.max(56, Math.min(160, Math.round(cellSize) || 88));
