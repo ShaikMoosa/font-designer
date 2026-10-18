@@ -61,7 +61,110 @@ The Handbook (294 pages, 18 chapters) was mapped against Phases 1–6. Well cove
 - **UI/UX pass before Phase 10 (complete):** light Glyphs-like theme, Font/Edit workspace switch, category/language rails, glyph-details pane, Grid/List in both workspaces, scaling thumbnails, click-operated menus with `aria-expanded` and Escape handling, and an honest selected/shown/total status line. Verified: `npm test` (50/50, including the Font View tests in `test/fontview.test.ts`), `npm run typecheck` (clean), and `npm run build` (pass).
 - **Phase 10 — Font View and glyph data (complete):** glyph-info database (`src/glyphinfo.ts`: letters, digits, punctuation/symbols, production aliases) with suggestions in the Inspector and on glyph creation; rename that rewrites component bases, metrics keys, and kerning pairs; batch operations (apply glyph info to the font, set category for the shown glyphs, move the selected glyph in the font order); Font View filters (Unicode/outline/empty/composite/color) and display sorting (font order, name, Unicode); and production name, tags, color label, case, script override, and note fields on the model, edited in the Inspector, shown in the glyph-details panel, and round-tripped through `.glyphs` JSON, OpenStep saves, and UFO GLIF (`<note>` plus a `com.glyphswindows.*` lib).
 - **Phase 11 — Interpolation pro (complete):** master-compatibility report in Font Info (missing layer, contour/node count, closed mismatch, and intermediate-structure issues) with one-click copy-base-layer fixes; instances editor (name, active flag, axis weight, style link, per-instance UFO export, add/delete); intermediate (brace) layers captured from the active layer at a weight, loaded back for editing, used as piecewise interpolation stops, and round-tripped through `.glyphs`; and variable-axis settings (name/tag/min/default/max plus per-master weights) in Font Info feeding the designspace bundle the compile service builds variable fonts from. The service still builds a single axis; multi-axis is deferred.
+- **Pre-Phase 12 UI/UX ramp (planned):** complete the reference-driven interface and workflow ramp described below before starting new Phase 12 font-engine capabilities. The initial shell redesign—unified document tabs, icon toolbar, collapsible panels, full-bleed canvas, glyph information strip, compact preview, responsive layout, and design-system documentation—was completed and pushed as `54d8f14`. The remaining work focuses on Font View density, contextual Palette behavior, direct manipulation, and visual master/interpolation workflows.
 - **Phase 12 — Later candidates:** corner/cap/segment/brush components and Pixel tool; COLR/CPAL color fonts; PostScript/TrueType autohinting toggles (manual hinting UI stays deferred); app Settings, sample strings, and shortcuts; scripts/plug-ins; signing and auto-update once a certificate exists.
+
+## Pre-Phase 12 UI/UX Ramp — Reference Comparison and Delivery Plan
+
+### Design Direction
+
+Use the classic Glyphs desktop screenshots for durable information architecture—taxonomy sidebar, dense grid/list Font View, contextual right Palette, compact toolbar, and bottom status/zoom controls—and use the newer screenshots for interaction behavior: lower chrome, a larger drawing surface, contextual expert tools, visual master comparison, ghost outlines, and in-context instance proofing.
+
+The target is not a pixel copy of macOS. It is a Windows-native professional type-design workspace that matches the reference product's task flow, density, hierarchy, and directness while retaining Windows menus, Ctrl-based shortcuts, native dialogs, Segoe UI typography, browser fallback behavior, and original icons/assets.
+
+### Current Product Assessment
+
+The `54d8f14` redesign establishes a credible shell: unified Font View/glyph tabs, compact icon tools, a dominant editor canvas, collapsible navigator/inspector/preview regions, a contextual glyph information strip, visible focus states, and responsive behavior.
+
+The remaining gap is workflow fidelity rather than generic visual polish:
+
+- **Font View:** grid/list, search, filters, and counts exist, but the workspace lacks the reference product's scalable density, sticky table structure, multi-selection workflow, and integrated taxonomy/details model.
+- **Edit View:** the canvas is appropriately dominant, but navigation, guide hierarchy, text/edit-mode feedback, zoom controls, and selection feedback need further refinement.
+- **Inspector and Palette:** functionality exists but remains distributed across six equal-weight tabs and long forms. The reference product uses contextual, collapsible sections and visual controls.
+- **Masters and interpolation:** the data model supports masters, instances, intermediate layers, and compatibility checking, but the UI does not yet make overlays, layer visibility, intermediate stops, or instance progression visually understandable.
+- **Direct manipulation:** nodes, handles, alignment, transforms, and filters work, but expert operations should appear near the work with live previews instead of permanently increasing sidebar complexity.
+
+### Ramp R1 — Shell Normalization
+
+Lock the final application density and workspace behavior before redesigning individual tools:
+
+- Normalize browser and Electron chrome so the same document hierarchy is recognizable in both environments.
+- Tune toolbar metrics, icon sizing, separator rhythm, canvas tone, guide contrast, and panel dividers.
+- Add reliable resizable splitters, panel-width persistence, panel visibility persistence, and a compact zoom/navigation HUD.
+- Keep the toolbar on one row; secondary commands stay in contextual popovers or overflow.
+
+**Exit gate:** no toolbar wrapping, clipped controls, or layout jumps at 1280×720, 1440×900, and 1920×1080, including Windows scaling at 125% and 150%.
+
+### Ramp R2 — Font View Parity
+
+Turn Font View into a production workspace for fonts containing hundreds or thousands of glyphs:
+
+- Rebuild Grid View around glyph-first cells whose labels and metadata adapt to cell size.
+- Rebuild List View as a dense table with sticky headers, resizable columns, predictable keyboard navigation, and visible export/status fields.
+- Support multi-selection, Shift-range selection, Ctrl-toggle selection, and batch actions without losing the current search/filter context.
+- Integrate category/language taxonomy, saved filters, search, selected-glyph details, selected/visible/total counts, add/remove controls, and the cell-size slider into one coherent layout.
+- Preserve selection, filters, sort order, scroll position, and cell size when switching between Grid and List.
+
+**Exit gate:** fonts containing 100–1,000 glyphs remain fast and scannable; Grid/List switching preserves state; keyboard and mouse selection behave consistently.
+
+### Ramp R3 — Edit View Refinement
+
+Make drawing, spacing, navigation, and proofing feel continuous:
+
+- Increase the compact navigator's information density and add task-aware grouping/search behavior.
+- Establish clear Text/Edit modes and unambiguous active-pane/tool feedback.
+- Refine metric, guide, ghost, node, handle, and selection semantics so construction geometry never competes with the outline.
+- Keep the glyph information box attached to the canvas and expose the relevant spacing/kerning values contextually.
+- Allow Preview to dock, collapse, resize, and remember its state without stealing canvas space.
+- Add consistent pan, zoom, fit, previous/next glyph, and status feedback near the canvas.
+
+**Exit gate:** drawing, spacing, glyph navigation, and proofing can be completed without repeatedly opening the long Inspector form.
+
+### Ramp R4 — Contextual Palette
+
+Replace the current tab-heavy form panel with a contextual professional Palette:
+
+- Organize Dimensions, Fit Curve, Layers, Transformations, Components, Filters, and backup layers as collapsible sections.
+- Show only sections relevant to the current selection, tool, glyph, or workspace.
+- Replace text-heavy transformation fields with visual origin matrices, lock controls, steppers, rotate/skew/flip icons, alignment controls, and immediate feedback.
+- Give Layers a visual list with active state, visibility, master/intermediate identity, and relevant add/remove actions.
+- Move Font Info, Features, and Export into focused surfaces or dialogs instead of treating them as equal editing tabs.
+- Remember open sections and commonly used values per document where safe.
+
+**Exit gate:** the right panel changes meaningfully with context, common transformations are visually discoverable, and advanced workflows no longer crowd basic glyph editing.
+
+### Ramp R5 — Masters, Interpolation, and Proofing
+
+Expose the Phase 11 model visually before adding more interpolation capabilities:
+
+- Add a master/layer browser with active, visible, hidden, and intermediate-layer states.
+- Provide overlay, split, and side-by-side comparison modes with controllable ghost outlines.
+- Show intermediate-layer positions along the weight axis and make incompatibility locations visible near the affected glyph/layer.
+- Add previous/next master and axis-position navigation without leaving Edit View.
+- Add an instance progression preview so designers can inspect interpolation results continuously across the axis.
+- Keep compatibility fixes and per-instance export available from the visual workflow instead of only from Font Info.
+
+**Exit gate:** a user can visually compare masters, locate intermediate stops, recognize compatibility problems, and proof instances without switching to a separate diagnostic tab.
+
+### Ramp R6 — Workflow Hardening and Release Gate
+
+Finish the UI as a reliable Windows desktop product:
+
+- Add consistent context menus, tooltips, shortcut discovery, disabled/loading/error states, and instructional empty states.
+- Verify full keyboard traversal, visible focus, screen-reader labels, contrast, reduced motion, and high-DPI rendering.
+- Ensure popovers and contextual tools escape scroll/overflow containers correctly.
+- Capture screenshot baselines for Font Grid, Font List, Edit View, split masters, collapsed panels, and focused workflows.
+- Run browser and packaged Electron playthroughs for open → edit → space/kern → interpolate → preview → export.
+
+**Exit gate:** all existing 65 tests pass; `npm run typecheck` and `npm run build` pass; critical UI workflows pass at three viewport sizes and two DPI levels; packaged Electron behavior matches the browser build where platform APIs do not intentionally differ.
+
+### Scope Boundaries
+
+- Preserve the existing font model, geometry, shaping, interchange, compile-service, validation, and export behavior throughout the ramp.
+- Do not hide new font-engine work inside UI phases. Slanter-style geometry, corner/brush components, multi-axis interpolation math, hinting, color fonts, plug-ins, and other Phase 12 candidates remain deferred.
+- Use the reference product's workflow and hierarchy, not its logo, proprietary artwork, or macOS window chrome.
+- Keep the browser fallback functional and keep Windows-native menus, shortcuts, focus behavior, and file dialogs in the Electron application.
+- Deliver in the order **R1 → R2 → R3 → R4 → R5 → R6**, with visual and interaction verification after every ramp. Move R5 ahead of R4 only if interpolation becomes the immediate product priority.
 
 ## Explicit Non-Goals
 
