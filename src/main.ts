@@ -11,6 +11,7 @@ import {
   editNavigatorGlyphs, resolveKern,
   compatibilityReport, copyLayerBetweenMasters, instanceT, instanceAxisWeight, cloneContours,
   sortedMasters, axisRange, weightForT, axisStopsForGlyph, issuesForGlyph, adjacentMaster, instanceProgression, layerSummaries, autohintEnabled,
+  fontAxes, masterLocation, defaultLocation, normalizeLocation, instanceLocation, formatLocation, axisRangeForTag, axisStopsForAxis, instanceProgressionForAxis, valueForT, interpolateGlyphAtLocation, intermediateLocation,
 } from "./model.ts";
 import type { EditNavigatorScope, GlyphFilter, GlyphSortMode } from "./model.ts";
 import { glyphInfoFor, glyphSuggestionFor, productionNameFor, COLOR_LABELS } from "./glyphinfo.ts";
@@ -55,6 +56,8 @@ interface AppState {
   compareMode: CompareMode;
   ghostOpacity: number;
   axisT: number;
+  axisTag: string;
+  axisLocation: Record<string, number>;
   proofInterpolated: boolean;
 }
 
@@ -225,25 +228,66 @@ const state: AppState = {
   compareMode: "off",
   ghostOpacity: 0.55,
   axisT: 0.5,
+  axisTag: "wght",
+  axisLocation: { wght: 550 },
   proofInterpolated: false,
 };
 
+/** Active interpolation axis (Masters bar picker); wght for old fonts. */
+function activeAxisTag(): string {
+  const tags = fontAxes(state.font).map((a) => a.tag);
+  return tags.includes(state.axisTag) ? state.axisTag : (tags[0] || "wght");
+}
+/** Current proof location; missing axes filled from defaults/masters. */
+function currentLocation(): Record<string, number> {
+  const loc = normalizeLocation(state.font, state.axisLocation);
+  // Keep the stored location complete so pickers/sliders stay stable.
+  state.axisLocation = { ...loc };
+  return loc;
+}
+/** Proof location with the active axis set from masters-extent t. */
+function locationForAxisT(t: number): Record<string, number> {
+  const tag = activeAxisTag();
+  return { ...currentLocation(), [tag]: valueForT(state.font, tag, t) };
+}
+function syncAxisTFromLocation(): void {
+  const tag = activeAxisTag();
+  const values = state.font.masters.map((m) => masterLocation(state.font, m)[tag]);
+  if (!values.length) { state.axisT = 0; return; }
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const value = currentLocation()[tag] ?? lo;
+  state.axisT = hi === lo ? 0 : Math.max(0, Math.min(1, (value - lo) / (hi - lo)));
+}
+function setActiveAxis(tag: string): void {
+  if (!fontAxes(state.font).some((a) => a.tag === tag)) return;
+  state.axisTag = tag;
+  currentLocation();
+  syncAxisTFromLocation();
+  persistMastersPrefs();
+}
+function setAxisValue(tag: string, value: number): void {
+  state.axisLocation = { ...currentLocation(), [tag]: value };
+  currentLocation();
+  if (tag === activeAxisTag()) syncAxisTFromLocation();
+  persistMastersPrefs();
+}
+
 const MASTERS_PREFS_KEY = "glyphs-windows.masters.v1";
-function loadMastersPrefs(): { compareMode: CompareMode; ghostOpacity: number } {
+function loadMastersPrefs(): { compareMode: CompareMode; ghostOpacity: number; axisTag?: string; axisLocation?: Record<string, number> } {
   try {
     const raw = localStorage.getItem(MASTERS_PREFS_KEY);
     if (!raw) return { compareMode: "off", ghostOpacity: 0.55 };
-    const stored = JSON.parse(raw) as { compareMode?: string; ghostOpacity?: number };
+    const stored = JSON.parse(raw) as { compareMode?: string; ghostOpacity?: number; axisTag?: string; axisLocation?: Record<string, number> };
     const mode: CompareMode = stored.compareMode === "overlay" || stored.compareMode === "split" ? stored.compareMode : "off";
     const opacity = typeof stored.ghostOpacity === "number" ? Math.max(0.1, Math.min(1, stored.ghostOpacity)) : 0.55;
-    return { compareMode: mode, ghostOpacity: opacity };
+    return { compareMode: mode, ghostOpacity: opacity, axisTag: stored.axisTag, axisLocation: stored.axisLocation };
   } catch {
     return { compareMode: "off", ghostOpacity: 0.55 };
   }
 }
 function persistMastersPrefs(): void {
   try {
-    localStorage.setItem(MASTERS_PREFS_KEY, JSON.stringify({ compareMode: state.compareMode, ghostOpacity: state.ghostOpacity }));
+    localStorage.setItem(MASTERS_PREFS_KEY, JSON.stringify({ compareMode: state.compareMode, ghostOpacity: state.ghostOpacity, axisTag: state.axisTag, axisLocation: state.axisLocation }));
   } catch {
     // Masters bar remains usable without persistence.
   }
@@ -252,6 +296,8 @@ function persistMastersPrefs(): void {
   const mastersPrefs = loadMastersPrefs();
   state.compareMode = mastersPrefs.compareMode;
   state.ghostOpacity = mastersPrefs.ghostOpacity;
+  if (mastersPrefs.axisTag) state.axisTag = mastersPrefs.axisTag;
+  if (mastersPrefs.axisLocation) state.axisLocation = { ...mastersPrefs.axisLocation };
   if (state.compareMode === "split") state.splitView = true;
 }
 
@@ -408,7 +454,12 @@ function refreshPaneB(refit = false): void {
 }
 
 function interpolatedPathD(glyph: Glyph, t: number): string {
-  const ig = interpolateGlyphAt(state.font, glyph.name, t);
+  const ig = interpolateGlyphAtLocation(state.font, glyph.name, locationForAxisT(t));
+  if (!ig) return "";
+  return contoursToPathD(ig.layers[state.font.currentMasterId]?.paths ?? []);
+}
+function interpolatedPathDAtLocation(glyph: Glyph, location: Record<string, number>): string {
+  const ig = interpolateGlyphAtLocation(state.font, glyph.name, location);
   if (!ig) return "";
   return contoursToPathD(ig.layers[state.font.currentMasterId]?.paths ?? []);
 }
@@ -460,8 +511,8 @@ function syncAxisControls(): void {
   const weightEl = document.querySelector<HTMLOutputElement>("#mbWeight");
   if (weightEl) {
     const glyph = currentGlyph();
-    const ok = glyph ? interpolateGlyphAt(state.font, glyph.name, state.axisT) !== null : false;
-    weightEl.textContent = `${weightForT(state.font, state.axisT)} · t=${state.axisT.toFixed(2)}${state.font.masters.length >= 2 && !ok ? " · incompatible" : ""}`;
+    const ok = glyph ? interpolateGlyphAtLocation(state.font, glyph.name, currentLocation()) !== null : false;
+    weightEl.textContent = `${formatLocation(state.font, currentLocation())} · t=${state.axisT.toFixed(2)}${state.font.masters.length >= 2 && !ok ? " · incompatible" : ""}`;
   }
   const cursor = document.querySelector<HTMLElement>("#mastersBar .axis-cursor");
   if (cursor) cursor.style.left = `${state.axisT * 100}%`;
@@ -483,10 +534,13 @@ function syncAxisControls(): void {
 
 function setAxisT(t: number, announce = false): void {
   state.axisT = Math.max(0, Math.min(1, t));
+  const tag = activeAxisTag();
+  state.axisLocation = { ...currentLocation(), [tag]: valueForT(state.font, tag, state.axisT) };
+  persistMastersPrefs();
   updateComparisonGhosts();
   syncAxisControls();
   if (state.proofInterpolated) renderPreview();
-  if (announce) setStatus(`Axis proof at weight ${weightForT(state.font, state.axisT)} (t=${state.axisT.toFixed(2)}).`);
+  if (announce) setStatus(`Axis proof at ${formatLocation(state.font, currentLocation())} (t=${state.axisT.toFixed(2)} on ${tag}).`);
 }
 
 function navigateMaster(delta: -1 | 1): void {
@@ -495,15 +549,16 @@ function navigateMaster(delta: -1 | 1): void {
   state.font.currentMasterId = next.id;
   editor.refresh(state.font, currentGlyph());
   renderAll();
-  setStatus(`Active master: ${next.name} (${next.weightValue}).`);
+  setStatus(`Active master: ${next.name} (${formatLocation(state.font, masterLocation(state.font, next))}).`);
 }
 
 function renderMastersBar(): void {
   const bar = $<HTMLElement>("#mastersBar");
   const glyph = currentGlyph();
   const masters = sortedMasters(state.font);
-  const range = axisRange(state.font);
-  const weight = weightForT(state.font, state.axisT);
+  const activeTag = activeAxisTag();
+  const range = axisRange(state.font, activeTag);
+  const weight = Math.round(currentLocation()[activeTag] ?? range.defaultValue);
   const issues = glyph ? issuesForGlyph(state.font, glyph.name) : [];
   const allIssues = state.font.masters.length >= 2 ? compatibilityReport(state.font) : [];
   if (masters.length < 2) {
@@ -517,14 +572,14 @@ function renderMastersBar(): void {
     return;
   }
   const summaries = glyph ? layerSummaries(state.font, glyph) : [];
-  const stops = glyph ? axisStopsForGlyph(state.font, glyph) : [];
+  const stops = glyph ? axisStopsForAxis(state.font, glyph, activeTag) : [];
   const span = Math.max(1, range.max - range.min);
   const chips = summaries.map((s) => {
     const active = s.masterId === state.font.currentMasterId;
     const hidden = paletteHiddenMasters.has(s.masterId);
     const missing = !s.hasLayer;
     return `<span class="masters-chip${active ? " is-active" : ""}${hidden ? " is-hidden" : ""}${missing ? " is-missing" : ""}">
-      <button class="masters-chip-main" data-mb-master="${escHtml(s.masterId)}" type="button" aria-pressed="${active}" title="Make ${escHtml(s.masterName)} active">${escHtml(s.masterName)} ${s.weight}</button>
+      <button class="masters-chip-main" data-mb-master="${escHtml(s.masterId)}" type="button" aria-pressed="${active}" title="Make ${escHtml(s.masterName)} active (${escHtml(s.locationLabel || String(s.weight))})">${escHtml(s.masterName)} ${fontAxes(state.font).length > 1 ? escHtml((s.locationLabel || "").replace(/^wght /, "")) : s.weight}</button>
       <button class="masters-chip-eye icon-btn" data-mb-eye="${escHtml(s.masterId)}" type="button" aria-pressed="${!hidden}" aria-label="${hidden ? "Show" : "Hide"} ${escHtml(s.masterName)} overlay" title="${hidden ? "Show overlay" : "Hide overlay"}">${hidden ? "○" : "●"}</button>
       <small>${missing ? "Missing" : `${s.contours}c · ${s.nodes}n`}</small>
     </span>`;
@@ -533,15 +588,15 @@ function renderMastersBar(): void {
     const left = Math.max(0, Math.min(100, ((stop.weight - range.min) / span) * 100));
     return `<span class="axis-stop is-${stop.kind}${stop.masterId === state.font.currentMasterId ? " is-active" : ""}" style="left:${left}%" title="${escHtml(stop.label)} · ${stop.weight}"><i aria-hidden="true"></i><small>${stop.weight}</small></span>`;
   }).join("");
-  const progression = instanceProgression(state.font, 5).map((step) => {
-    const d = glyph ? interpolatedPathD(glyph, step.t) : "";
+  const progression = instanceProgressionForAxis(state.font, activeTag, currentLocation(), 5).map((step) => {
+    const d = glyph ? interpolatedPathDAtLocation(glyph, step.location) : "";
     const current = Math.abs(step.t - state.axisT) < 0.13;
-    return `<button class="progression-cell${current ? " is-current" : ""}" data-mb-step="${step.t}" type="button" aria-pressed="${current}" title="Proof at weight ${step.weight}">
+    return `<button class="progression-cell${current ? " is-current" : ""}" data-mb-step="${step.t}" type="button" aria-pressed="${current}" title="Proof at ${escHtml(formatLocation(state.font, step.location))}">
       <svg viewBox="-80 -720 760 1020" aria-hidden="true"><path d="${escHtml(d)}" transform="scale(1 -1)" fill-rule="evenodd"></path></svg>
       <small>${step.weight}</small>
     </button>`;
   }).join("");
-  const interpOk = glyph ? interpolateGlyphAt(state.font, glyph.name, state.axisT) !== null : false;
+  const interpOk = glyph ? interpolateGlyphAtLocation(state.font, glyph.name, currentLocation()) !== null : false;
   bar.innerHTML = `<div class="masters-bar-inner">
     <div class="masters-bar-row">
       <span class="masters-bar-label">Masters</span>
@@ -559,10 +614,10 @@ function renderMastersBar(): void {
       <span class="masters-compat${issues.length ? " is-bad" : ""}" role="status">${issues.length ? `${issues.length} issue(s) on ${escHtml(glyph?.name || "")}` : allIssues.length ? `${allIssues.length} font issue(s)` : "Compatible"}</span>
     </div>
     <div class="masters-bar-row masters-axis-row">
-      <span class="masters-bar-label">Axis ${escHtml(state.font.axes[0]?.tag || "wght")}</span>
+      <span class="masters-bar-label">Axis</span><select id="mbAxisPick" aria-label="Interpolation axis">${fontAxes(state.font).map((a) => `<option value="${escHtml(a.tag)}"${a.tag === activeTag ? " selected" : ""}>${escHtml(a.tag)} — ${escHtml(a.name)}</option>`).join("")}</select>
       <div class="axis-track" aria-hidden="true"><div class="axis-line"></div>${stopMarks}<span class="axis-cursor" style="left:${state.axisT * 100}%"><i></i></span></div>
       <input id="mbAxis" type="range" min="0" max="1000" value="${Math.round(state.axisT * 1000)}" aria-label="Interpolation axis position" />
-      <output id="mbWeight" aria-live="polite">${weight} · t=${state.axisT.toFixed(2)}${interpOk ? "" : " · incompatible"}</output>
+      <output id="mbWeight" aria-live="polite">${escHtml(formatLocation(state.font, currentLocation()))} · t=${state.axisT.toFixed(2)}${interpOk ? "" : " · incompatible"}</output>
       <label class="masters-proof"><input id="mbProof" type="checkbox" ${state.proofInterpolated ? "checked" : ""} /> Proof text interpolated</label>
     </div>
     <div class="masters-bar-row masters-progression-row">
@@ -596,6 +651,14 @@ function renderMastersBar(): void {
     persistMastersPrefs();
     updateComparisonGhosts();
   });
+  qs<HTMLSelectElement>(bar, "#mbAxisPick").addEventListener("change", (event) => {
+    setActiveAxis((event.target as HTMLSelectElement).value);
+    renderMastersBar();
+    updateComparisonGhosts();
+    syncAxisControls();
+    if (state.proofInterpolated) renderPreview();
+    setStatus(`Proof axis: ${activeAxisTag()} at ${formatLocation(state.font, currentLocation())}. Other axes stay where they are.`);
+  });
   qs<HTMLInputElement>(bar, "#mbAxis").addEventListener("input", (event) => {
     setAxisT((+(event.target as HTMLInputElement).value || 0) / 1000);
   });
@@ -610,7 +673,7 @@ function renderMastersBar(): void {
   bar.querySelectorAll<HTMLButtonElement>("[data-mb-step]").forEach((button) => button.addEventListener("click", () => {
     setAxisT(Number(button.dataset.mbStep) || 0, true);
   }));
-  qs<HTMLButtonElement>(bar, "#mbExportProof").addEventListener("click", () => { void exportInstanceUfo(state.axisT, `Proof-${weight}`); });
+  qs<HTMLButtonElement>(bar, "#mbExportProof").addEventListener("click", () => { void exportInstanceUfoAtLocation(currentLocation(), `Proof-${formatLocation(state.font, currentLocation()).replace(/[^a-zA-Z0-9]+/g, "-")}`); });
   const fixButton = bar.querySelector<HTMLButtonElement>("#mbFixGlyph");
   fixButton?.addEventListener("click", () => {
     if (!glyph) return;
@@ -1788,13 +1851,13 @@ function renderPalette(g: Glyph): void {
   interpSlider.value = String(Math.round(state.axisT * 100));
   const updateInterp = (): void => {
     const t = (+interpSlider.value || 0) / 100;
-    const ig = interpolateGlyphAt(state.font, g.name, t);
+    const ig = interpolateGlyphAtLocation(state.font, g.name, locationForAxisT(t));
     if (!ig) {
         interpLabel.textContent = state.font.masters.length < 2 ? "Add a second master to interpolate." : "Masters incompatible for this glyph (contour/node order differs). See the Masters bar for the fix.";
       setAxisT(t);
       return;
     }
-    interpLabel.textContent = `t=${t.toFixed(2)} between ${state.font.masters[0].name} and ${state.font.masters[state.font.masters.length - 1].name} — dashed green ghost in the editor.`;
+    interpLabel.textContent = `t=${t.toFixed(2)} on ${activeAxisTag()} at ${formatLocation(state.font, locationForAxisT(t))} — dashed green ghost in the editor. Other axes stay fixed; pick another axis in the Masters bar.`;
     setAxisT(t);
   };
   interpSlider.addEventListener("input", updateInterp);
@@ -1914,7 +1977,7 @@ function renderPalette(g: Glyph): void {
   }));
   const intermediateList = qs<HTMLElement>(page, "#intermediateList");
   intermediateList.innerHTML = (g.intermediates || []).length
-    ? (g.intermediates || []).map((s, i) => `<div class="field-row"><span>Weight ${s.axisValue} · ${s.paths.length} contour(s)</span><span><button data-inter-load="${i}" type="button">Load</button> <button data-inter-del="${i}" type="button">Delete</button></span></div>`).join("")
+    ? (g.intermediates || []).map((s, i) => `<div class="field-row"><span>${escHtml(formatLocation(state.font, intermediateLocation(state.font, s)))} · ${s.paths.length} contour(s)</span><span><button data-inter-load="${i}" type="button">Load</button> <button data-inter-del="${i}" type="button">Delete</button></span></div>`).join("")
     : '<span class="hint">No intermediate layers yet.</span>';
   intermediateList.querySelectorAll<HTMLButtonElement>("[data-inter-del]").forEach((btn) => btn.addEventListener("click", () => {
     pushUndo();
@@ -1929,21 +1992,24 @@ function renderPalette(g: Glyph): void {
     layerOf(g).paths = cloneContours(stop.paths);
     syncBearings(state.font, g);
     editor.refresh(state.font, g); renderAll();
-    setStatus(`Intermediate at weight ${stop.axisValue} loaded into the active master layer — edit, then capture again to update the stop.`);
+    setStatus(`Intermediate at ${formatLocation(state.font, intermediateLocation(state.font, stop))} loaded into the active master layer — edit, then capture again to update the stop.`);
   }));
   qs<HTMLButtonElement>(page, "#palAddIntermediate").addEventListener("click", () => {
     if (state.font.masters.length < 2) { setStatus("Add a second master first — intermediates sit between two masters."); return; }
-    const weights = state.font.masters.map((m) => m.weightValue || 0);
-    const lo = Math.min(...weights), hi = Math.max(...weights);
-    const raw = prompt(`Weight for the intermediate layer (between ${lo} and ${hi}):`, String(Math.round((lo + hi) / 2)));
+    const wghtTag = fontAxes(state.font).some((a) => a.tag === "wght") ? "wght" : activeAxisTag();
+    const values = state.font.masters.map((m) => masterLocation(state.font, m)[wghtTag]);
+    const lo = Math.min(...values), hi = Math.max(...values);
+    const current = Math.round(currentLocation()[wghtTag] ?? (lo + hi) / 2);
+    const raw = prompt(`${wghtTag} value for the intermediate layer (between ${lo} and ${hi}; other axes take the current proof location ${formatLocation(state.font, currentLocation())}):`, String(current > lo && current < hi ? current : Math.round((lo + hi) / 2)));
     if (raw == null) return;
     const axisValue = Number(raw);
-    if (!Number.isFinite(axisValue) || axisValue <= lo || axisValue >= hi) { setStatus(`Enter a weight strictly between ${lo} and ${hi}.`); return; }
+    if (!Number.isFinite(axisValue) || axisValue <= lo || axisValue >= hi) { setStatus(`Enter a ${wghtTag} value strictly between ${lo} and ${hi}.`); return; }
     pushUndo();
-    g.intermediates = [...(g.intermediates || []).filter((s) => s.axisValue !== axisValue), { axisValue, paths: cloneContours(layerOf(g).paths) }]
+    const loc = { ...currentLocation(), [wghtTag]: axisValue };
+    g.intermediates = [...(g.intermediates || []).filter((s) => intermediateLocation(state.font, s)[wghtTag] !== axisValue), { axisValue, axisValues: loc, paths: cloneContours(layerOf(g).paths) }]
       .sort((a, b) => a.axisValue - b.axisValue);
     renderAll();
-    setStatus(`Intermediate layer captured at weight ${axisValue} from the active master layer.`);
+    setStatus(`Intermediate layer captured at ${formatLocation(state.font, loc)} from the active master layer.`);
   });
 }
 
@@ -2061,56 +2127,110 @@ function renderFontInfo(): void {
     </div>
     <p class="hint"><strong>Features:</strong> automatic ${autoFeatures.kernPairs + autoFeatures.groupPairs} kern rule(s), ${autoFeatures.ligatures} ligature(s), ${autoFeatures.markAttachments + autoFeatures.markToMark} mark rule(s); manual code in the Features tab overrides automatic pairs.</p>
     <div class="field"><label>Hinting</label><label class="hint"><input id="fiAutohint" type="checkbox" ${autohintEnabled(f) ? "checked" : ""} /> Autohint TrueType on export (compile service applies ttfautohint; browser TTF/WOFF stay unhinted with a gasp table)</label></div>
-    <div class="field"><label>Variable axis (first axis feeds the compile service)</label><div id="fiAxes"></div></div>
+    <div class="field"><label>Variable axes (all feed the compile service)</label><div id="fiAxes"></div></div>
     <div class="field"><label>Masters</label><div id="fiMasters"></div></div>
     <div class="field"><label>Instances</label><div id="fiInstances"></div>
       <div class="field-row"><button id="fiAddInstance" type="button">+ Instance</button></div>
     </div>
     <div class="field"><label>Master compatibility</label><div id="fiCompat"></div></div>
-    <p class="hint">Handbook ref: Font Info (p85), Masters (p88), Instances and Exports (p92). Static exports use the active master; variable export uses the axis and master weights above through the compile service. Custom parameters are still deferred.</p>`;
+    <p class="hint">Handbook ref: Font Info (p85), Masters (p88), Instances and Exports (p92). Static exports use the active master; variable export uses every axis and master location above through the compile service. Custom parameters are still deferred.</p>`;
   if (!f.axes.length) f.axes = [{ tag: "wght", name: "Weight", min: 400, defaultValue: 400, max: 700 }];
   const axis = f.axes[0];
   const axesEl = qs<HTMLElement>(page, "#fiAxes");
-  axesEl.innerHTML = `
+  axesEl.innerHTML = f.axes.map((ax, ai) => `
     <div class="field-row">
-      <div class="field"><label>Axis name</label><input data-axis="name" type="text" value="${escHtml(axis.name)}" /></div>
-      <div class="field"><label>Tag</label><input data-axis="tag" type="text" value="${escHtml(axis.tag)}" /></div>
+      <div class="field"><label>Axis ${ai + 1} name</label><input data-axis2="${ai}:name" type="text" value="${escHtml(ax.name)}" /></div>
+      <div class="field"><label>Tag</label><input data-axis2="${ai}:tag" type="text" value="${escHtml(ax.tag)}" /></div>
     </div>
     <div class="field-row-3">
-      <div class="field"><label>Min</label><input data-axis="min" type="number" value="${axis.min}" /></div>
-      <div class="field"><label>Default</label><input data-axis="defaultValue" type="number" value="${axis.defaultValue}" /></div>
-      <div class="field"><label>Max</label><input data-axis="max" type="number" value="${axis.max}" /></div>
+      <div class="field"><label>Min</label><input data-axis2="${ai}:min" type="number" value="${ax.min}" /></div>
+      <div class="field"><label>Default</label><input data-axis2="${ai}:defaultValue" type="number" value="${ax.defaultValue}" /></div>
+      <div class="field"><label>Max</label><input data-axis2="${ai}:max" type="number" value="${ax.max}" /></div>
     </div>
-    <p class="hint">The compile service builds one variable axis from these bounds and the master weights below; keep master weights inside the axis range.</p>`;
-  axesEl.querySelectorAll<HTMLInputElement>("[data-axis]").forEach((input) => bindChange(input, (el) => {
-    const key = input.dataset.axis as "name" | "tag" | "min" | "defaultValue" | "max";
-    if (key === "name" || key === "tag") axis[key] = el.value.trim() || axis[key];
-    else axis[key] = Number(el.value) || 0;
+    ${f.axes.length > 1 ? `<div class="field-row"><button data-axis-del="${ai}" type="button">Remove ${escHtml(ax.tag)} axis</button></div>` : ""}`).join("")
+    + `<div class="field-row"><button id="fiAddAxis" type="button">+ Add axis (e.g. wdth Width)</button></div>
+    <p class="hint">The compile service builds one variable axis per row from these bounds and the master locations below; keep every master location inside its axis range. Two axes (e.g. wght × wdth) need masters at the corners to interpolate cleanly.</p>`;
+  axesEl.querySelectorAll<HTMLInputElement>("[data-axis2]").forEach((input) => bindChange(input, (el) => {
+    const [idxRaw, key] = (input.dataset.axis2 || "0:name").split(":");
+    const ax = f.axes[Number(idxRaw) || 0];
+    if (!ax) return;
+    if (key === "name" || key === "tag") {
+      const next = el.value.trim();
+      if (!next) return;
+      if (key === "tag" && f.axes.some((other, oi) => oi !== (Number(idxRaw) || 0) && other.tag === next)) { setStatus(`Axis tag ${next} is already used — tags must be unique.`); renderAll(); return; }
+      if (key === "tag") {
+        const old = ax.tag;
+        ax.tag = next;
+        for (const m of f.masters) { if (m.axisValues && old in m.axisValues) { m.axisValues[next] = m.axisValues[old]; delete m.axisValues[old]; } }
+        for (const inst of f.instances) { if (inst.axisValues && old in inst.axisValues) { inst.axisValues[next] = inst.axisValues[old]; delete inst.axisValues[old]; } }
+        if (state.axisTag === old) state.axisTag = next;
+        if (state.axisLocation[old] != null) { state.axisLocation[next] = state.axisLocation[old]; delete state.axisLocation[old]; }
+      } else ax.name = next;
+    } else ax[key as "min" | "defaultValue" | "max"] = Number(el.value) || 0;
   }));
+  axesEl.querySelectorAll<HTMLButtonElement>("[data-axis-del]").forEach((btn) => btn.addEventListener("click", () => {
+    const ax = f.axes[Number(btn.dataset.axisDel) || 0];
+    if (!ax || f.axes.length <= 1) return;
+    if (!confirm(`Remove the ${ax.tag} axis? Master and instance values on it are discarded.`)) return;
+    pushUndo();
+    f.axes = f.axes.filter((item) => item !== ax);
+    for (const m of f.masters) { if (m.axisValues) delete m.axisValues[ax.tag]; }
+    for (const inst of f.instances) { if (inst.axisValues) delete inst.axisValues[ax.tag]; }
+    delete state.axisLocation[ax.tag];
+    if (state.axisTag === ax.tag) state.axisTag = f.axes[0]?.tag || "wght";
+    currentLocation(); syncAxisTFromLocation();
+    renderAll();
+    setStatus(`Axis ${ax.tag} removed — the font is single-axis again on ${f.axes[0]?.tag || "wght"}.`);
+  }));
+  qs<HTMLButtonElement>(axesEl, "#fiAddAxis")?.addEventListener("click", () => {
+    const tagRaw = prompt("New axis tag (4 letters, e.g. wdth for Width, opsz for Optical size):", f.axes.some((a) => a.tag === "wdth") ? "opsz" : "wdth");
+    const tag = (tagRaw || "").trim();
+    if (!tag) return;
+    if (f.axes.some((a) => a.tag === tag)) { setStatus(`Axis ${tag} already exists.`); return; }
+    const name = (prompt("Axis name:", tag === "wdth" ? "Width" : tag === "opsz" ? "Optical size" : tag) || "").trim() || tag;
+    const preset = tag === "wdth" ? { min: 75, defaultValue: 100, max: 125 } : tag === "opsz" ? { min: 9, defaultValue: 14, max: 72 } : { min: 0, defaultValue: 0, max: 100 };
+    pushUndo();
+    f.axes.push({ tag, name, ...preset });
+    for (const m of f.masters) m.axisValues = { ...masterLocation(f, m) };
+    currentLocation(); syncAxisTFromLocation();
+    renderAll();
+    setStatus(`Axis ${tag} (${name}) added at ${preset.min}–${preset.max}. Give masters distinct ${tag} locations below and at the corners, then proof with the Masters bar axis picker.`);
+  });
   const mastersEl = qs<HTMLElement>(page, "#fiMasters");
-  mastersEl.innerHTML = f.masters.map((m, i) => `
-    <div class="field-row">
+  mastersEl.innerHTML = f.masters.map((m, i) => {
+    const loc = masterLocation(f, m);
+    const axisInputs = f.axes.map((ax) => `<div class="field"><label>${escHtml(ax.tag)} (${escHtml(ax.name)})</label><input data-master-axis="${escHtml(m.id)}:${escHtml(ax.tag)}" type="number" value="${loc[ax.tag]}" /></div>`).join("");
+    return `<div class="field-row">
       <div class="field"><label>Master ${i + 1} name</label><input data-master-name="${m.id}" type="text" value="${escHtml(m.name)}" /></div>
-      <div class="field"><label>Weight (axis)</label><input data-master-weight="${m.id}" type="number" value="${m.weightValue}" /></div>
-    </div>`).join("");
+      ${axisInputs}
+    </div>`;
+  }).join("");
   mastersEl.querySelectorAll<HTMLInputElement>("[data-master-name]").forEach((input) => bindChange(input, (el) => {
     const m = f.masters.find((x) => x.id === input.dataset.masterName);
     if (m && el.value.trim()) m.name = el.value.trim();
   }));
-  mastersEl.querySelectorAll<HTMLInputElement>("[data-master-weight]").forEach((input) => bindChange(input, (el) => {
-    const m = f.masters.find((x) => x.id === input.dataset.masterWeight);
-    if (m) m.weightValue = Number(el.value) || 0;
+  mastersEl.querySelectorAll<HTMLInputElement>("[data-master-axis]").forEach((input) => bindChange(input, (el) => {
+    const [id, tag] = (input.dataset.masterAxis || "").split(":");
+    const m = f.masters.find((x) => x.id === id);
+    if (!m || !tag) return;
+    m.axisValues = { ...masterLocation(f, m), [tag]: Number(el.value) || 0 };
+    if (tag === "wght") m.weightValue = Number(el.value) || 0;
+    currentLocation(); syncAxisTFromLocation();
   }));
   const instancesEl = qs<HTMLElement>(page, "#fiInstances");
-  instancesEl.innerHTML = f.instances.length ? f.instances.map((inst, i) => `
+  instancesEl.innerHTML = f.instances.length ? f.instances.map((inst, i) => {
+    const loc = instanceLocation(f, inst);
+    const axisInputs = f.axes.map((ax) => `<input data-inst-axis="${i}:${escHtml(ax.tag)}" type="number" value="${loc[ax.tag]}" aria-label="Instance ${escHtml(ax.tag)}" title="${escHtml(ax.tag)} (${escHtml(ax.name)})" />`).join("");
+    return `
     <div class="compat-row">
       <input data-inst-name="${i}" type="text" value="${escHtml(inst.name)}" aria-label="Instance name" />
       <label class="hint"><input data-inst-active="${i}" type="checkbox" ${inst.active ? "checked" : ""} /> Active</label>
-      <input data-inst-weight="${i}" type="number" value="${instanceAxisWeight(f, inst)}" aria-label="Instance weight" title="Axis weight" />
+      ${axisInputs}
       <input data-inst-link="${i}" type="text" value="${escHtml(inst.styleLink || "")}" placeholder="Style link (e.g. Regular)" aria-label="Style link" />
       <button data-inst-export="${i}" type="button">Export UFO</button>
       <button data-inst-del="${i}" type="button">Delete</button>
-    </div>`).join("") : '<span class="hint">No instances yet.</span>';
+    </div>`;
+  }).join("") : '<span class="hint">No instances yet.</span>';
   instancesEl.querySelectorAll<HTMLInputElement>("[data-inst-name]").forEach((input) => bindChange(input, (el) => {
     const inst = f.instances[Number(input.dataset.instName) || 0];
     if (inst && el.value.trim()) inst.name = el.value.trim();
@@ -2121,9 +2241,10 @@ function renderFontInfo(): void {
     if (inst) inst.active = input.checked;
     renderAll();
   }));
-  instancesEl.querySelectorAll<HTMLInputElement>("[data-inst-weight]").forEach((input) => bindChange(input, (el) => {
-    const inst = f.instances[Number(input.dataset.instWeight) || 0];
-    if (inst) inst.axisValues = { ...(inst.axisValues || {}), [axis.tag]: Number(el.value) || 0 };
+  instancesEl.querySelectorAll<HTMLInputElement>("[data-inst-axis]").forEach((input) => bindChange(input, (el) => {
+    const [idxRaw, tag] = (input.dataset.instAxis || "0:wght").split(":");
+    const inst = f.instances[Number(idxRaw) || 0];
+    if (inst && tag) inst.axisValues = { ...instanceLocation(f, inst), [tag]: Number(el.value) || 0 };
   }));
   instancesEl.querySelectorAll<HTMLInputElement>("[data-inst-link]").forEach((input) => bindChange(input, (el) => {
     const inst = f.instances[Number(input.dataset.instLink) || 0];
@@ -2133,7 +2254,7 @@ function renderFontInfo(): void {
     const inst = f.instances[Number(btn.dataset.instExport) || 0];
     if (!inst) return;
     if (!inst.active) setStatus(`Instance ${inst.name} is inactive — exporting anyway as requested.`);
-    void exportInstanceUfo(instanceT(f, instanceAxisWeight(f, inst)), inst.name);
+    void exportInstanceUfoAtLocation(instanceLocation(f, inst), inst.name);
   }));
   instancesEl.querySelectorAll<HTMLButtonElement>("[data-inst-del]").forEach((btn) => btn.addEventListener("click", () => {
     pushUndo();
@@ -2143,9 +2264,9 @@ function renderFontInfo(): void {
   qs<HTMLButtonElement>(page, "#fiAddInstance").addEventListener("click", () => {
     pushUndo();
     const master = f.masters[f.masters.length - 1];
-    f.instances.push({ name: `Instance ${f.instances.length + 1}`, masterId: master?.id || f.currentMasterId, active: true, axisValues: { [axis.tag]: master?.weightValue ?? axis.defaultValue }, styleLink: "" });
+    f.instances.push({ name: `Instance ${f.instances.length + 1}`, masterId: master?.id || f.currentMasterId, active: true, axisValues: master ? { ...masterLocation(f, master) } : { ...defaultLocation(f) }, styleLink: "" });
     renderAll();
-    setStatus("Instance added — set its name, weight, and style link in Font Info.");
+    setStatus("Instance added — set its name, axis locations, and style link in Font Info.");
   });
   const compatEl = qs<HTMLElement>(page, "#fiCompat");
   const issues = compatibilityReport(f);
@@ -2169,7 +2290,7 @@ function renderFontInfo(): void {
     compatEl.querySelectorAll<HTMLButtonElement>("[data-compat-fix]").forEach((btn) => btn.addEventListener("click", () => {
       const issue = shown[Number(btn.dataset.compatFix) || 0];
       if (!issue) return;
-      const base = [...f.masters].sort((a, b) => (a.weightValue || 0) - (b.weightValue || 0))[0];
+      const base = sortedMasters(f)[0];
       pushUndo();
       if (copyLayerBetweenMasters(f, issue.glyphName, base.id, issue.masterId)) {
         renderAll();
@@ -2258,22 +2379,25 @@ function setTool(tool: Tool): void {
     : "Select: drag nodes/handles; Shift-click selects multiple nodes for alignment; arrows nudge the selection.");
 }
 
-async function exportInstanceUfo(t: number, label: string): Promise<void> {
+async function exportInstanceUfoAtLocation(location: Record<string, number>, label: string): Promise<void> {
   const g = currentGlyph();
-  if (g && !mastersCompatible(state.font, g.name) && state.font.masters.length >= 2) {
+  if (g && state.font.masters.length >= 2 && interpolateGlyphAtLocation(state.font, g.name, location) === null) {
     const issueCount = compatibilityReport(state.font).length;
     setStatus(`Instance export needs compatible masters — ${issueCount} issue(s) listed in Font Info. Fix outline order first.`);
     return;
   }
   const instanceFont = cloneFont(state.font);
   for (const glyph of instanceFont.glyphs) {
-    const ig = interpolateGlyphAt(instanceFont, glyph.name, t);
+    const ig = interpolateGlyphAtLocation(instanceFont, glyph.name, location);
     if (ig) glyph.layers[instanceFont.currentMasterId] = ig.layers[instanceFont.currentMasterId];
   }
   const base = (state.font.familyName || "Instance").replace(/[^\w\- ]/g, "").trim() || "Instance";
   const safeLabel = label.replace(/[^\w\- ]/g, "").trim() || "Instance";
   if (!await deliverBytes(`${base}-${safeLabel}.ufo.zip`, fontToUfoZip(instanceFont), "application/zip")) { setStatus("Export cancelled."); return; }
-  setStatus(`Exported instance ${safeLabel} UFO at t=${t.toFixed(2)} (decomposed, with designspace.json manifest).`);
+  setStatus(`Exported instance ${safeLabel} UFO at ${formatLocation(state.font, normalizeLocation(state.font, location))} (decomposed, with designspace.json manifest).`);
+}
+async function exportInstanceUfo(t: number, label: string): Promise<void> {
+  await exportInstanceUfoAtLocation(locationForAxisT(t), label);
 }
 
 function addMasterCopy(): void {
@@ -2281,12 +2405,16 @@ function addMasterCopy(): void {
   if (!name) return;
   pushUndo();
   const id = `master${Date.now().toString(36)}`;
-  state.font.masters.push({ id, name, weightValue: 700 });
+  const sourceMaster = state.font.masters.find((m) => m.id === state.font.currentMasterId) || state.font.masters[0];
+  const newLocation = sourceMaster ? { ...masterLocation(state.font, sourceMaster) } : { ...defaultLocation(state.font) };
+  const firstTag = fontAxes(state.font)[0]?.tag || "wght";
+  newLocation[firstTag] = axisRangeForTag(state.font, firstTag).max;
+  state.font.masters.push({ id, name, weightValue: newLocation.wght ?? 700, axisValues: { ...newLocation } });
   for (const glyph of state.font.glyphs) {
     const src = glyph.layers[state.font.currentMasterId] || { paths: [] };
     glyph.layers[id] = JSON.parse(JSON.stringify(src)) as GlyphLayer;
   }
-  state.font.instances.push({ name, masterId: id, active: true });
+  state.font.instances.push({ name, masterId: id, active: true, axisValues: { ...newLocation } });
   state.paneBMasterId = id;
   editorB.setMasterOverride(id);
   renderAll();
@@ -2366,6 +2494,8 @@ function createCompositeFlow(): void {
 
 function applyOpenedFont(font: Font, fileName: string): void {
   state.font = font;
+  state.axisLocation = { ...defaultLocation(state.font) };
+  syncAxisTFromLocation();
   state.undoStack = []; state.redoStack = [];
   state.currentGlyphName = state.font.glyphs[0]?.name || "";
   state.openTabs = state.currentGlyphName ? [state.currentGlyphName] : [];

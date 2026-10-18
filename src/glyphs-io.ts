@@ -2,7 +2,7 @@
 // parses them (parseOpenStep) and, since Phase 5, also writes them
 // (fontToOpenStep) for the supported model subset. The older JSON subset
 // (fontToGlyphsJson) remains available as an explicit fallback save.
-import { DEFAULT_FEATURE_CODE } from "./model.ts";
+import { DEFAULT_FEATURE_CODE, masterLocation } from "./model.ts";
 import type { Font, FontMaster, FontNode, Glyph, GlyphLayer, NodeType, SmartApply } from "./model.ts";
 
 // Imported JSON is untrusted external data; it is normalized into Font below.
@@ -96,7 +96,7 @@ function glyphsDoc(font: Font): Loose {
     versionString: font.version,
     unitsPerEm: font.unitsPerEm,
     fontMaster: font.masters.map((m) => ({
-      id: m.id, name: m.name, weightValue: m.weightValue,
+      id: m.id, name: m.name, weightValue: m.weightValue, axisValues: masterLocation(font, m),
       ascender: font.ascender, descender: font.descender,
       capHeight: font.capHeight, xHeight: font.xHeight,
     })),
@@ -123,7 +123,7 @@ function glyphsDoc(font: Font): Loose {
         })),
       })) : undefined,
       intermediates: g.intermediates?.length ? g.intermediates.map((s) => ({
-        axisValue: s.axisValue,
+        axisValue: s.axisValue, axisValues: s.axisValues,
         paths: s.paths.map((c) => ({
           closed: c.closed ? 1 : 0,
           nodes: c.nodes.map((n) => `${n.x} ${n.y} ${n.type.toUpperCase()}`),
@@ -225,6 +225,7 @@ export function glyphsJsonToFont(text: string, fileName?: string): Font {
     name: m.name || m.styleName || `Master ${i + 1}`,
     weightValue: Number(m.weightValue ?? 400) || 400,
   }));
+  masters.forEach((master, i) => { const raw = mastersRaw[i]?.axisValues; if (raw && typeof raw === "object") master.axisValues = Object.fromEntries(Object.entries(raw as Record<string, unknown>).map(([k, v]) => [k, Number(v) || 0])); });
   const glyphs: Glyph[] = ((doc.glyphs || []) as Loose[]).map((g) => {
     const layers: Record<string, GlyphLayer> = {};
     let components: Glyph["components"] = [];
@@ -274,7 +275,7 @@ export function glyphsJsonToFont(text: string, fileName?: string): Font {
       glyphCase: g.glyphCase === "upper" || g.glyphCase === "lower" ? g.glyphCase : "",
       scriptOverride: typeof g.scriptOverride === "string" ? g.scriptOverride : "",
       intermediates: Array.isArray(g.intermediates) ? (g.intermediates as Loose[]).map((s) => ({
-        axisValue: Number(s.axisValue) || 0,
+        axisValue: Number(s.axisValue) || 0, axisValues: s.axisValues && typeof s.axisValues === "object" ? Object.fromEntries(Object.entries(s.axisValues as Record<string, unknown>).map(([k, v]) => [k, Number(v) || 0])) : undefined,
         paths: ((s.paths || []) as Loose[]).map((c) => ({
           closed: c.closed === 1 || c.closed === true || String(c.closed) === "1",
           nodes: ((c.nodes || []) as unknown[]).map(parseNodeToken),

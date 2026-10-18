@@ -75,7 +75,7 @@ export interface FontInstance {
   // bold/italic counterpart of ("" when unlinked).
   styleLink?: string;
 }
-export interface IntermediateLayer { axisValue: number; paths: Contour[] }
+export interface IntermediateLayer { axisValue: number; axisValues?: Record<string, number>; paths: Contour[] }
 export interface FontAxis { tag: string; name: string; min: number; defaultValue: number; max: number }
 export interface Font {
   familyName: string; version: string; unitsPerEm: number;
@@ -93,6 +93,82 @@ export interface Bounds { minX: number; minY: number; maxX: number; maxY: number
 /** True when the font requests TrueType autohinting on export. */
 export function autohintEnabled(font: Font): boolean {
   return font.autohintTT === true;
+}
+
+// --- Phase 12B: multi-axis locations ---
+// A location maps every axis tag to a user-space value (e.g.
+// { wght: 550, wdth: 100 }). Masters store it in axisValues; weightValue
+// remains the wght value for back-compat with single-axis files.
+
+/** Axis tags declared on the font (never empty for interpolation). */
+export function fontAxes(font: Font): FontAxis[] {
+  if (font.axes?.length) return font.axes;
+  return [{ tag: "wght", name: "Weight", min: 400, defaultValue: 400, max: 700 }];
+}
+
+export function axisByTag(font: Font, tag: string): FontAxis | undefined {
+  return fontAxes(font).find((a) => a.tag === tag);
+}
+
+/** The designspace default location (every axis at its default). */
+export function defaultLocation(font: Font): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const axis of fontAxes(font)) out[axis.tag] = axis.defaultValue;
+  return out;
+}
+
+/** Full location of a master; missing axes fall back to wght/default. */
+export function masterLocation(font: Font, master: FontMaster): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const axis of fontAxes(font)) {
+    const explicit = master.axisValues?.[axis.tag];
+    if (explicit != null && Number.isFinite(explicit)) out[axis.tag] = explicit;
+    else if (axis.tag === "wght") out[axis.tag] = master.weightValue ?? axis.defaultValue;
+    else out[axis.tag] = axis.defaultValue;
+  }
+  return out;
+}
+
+/** Full location of an intermediate (brace) layer. */
+export function intermediateLocation(font: Font, layer: IntermediateLayer): Record<string, number> {
+  const out = defaultLocation(font);
+  if (layer.axisValues) {
+    for (const axis of fontAxes(font)) {
+      const v = layer.axisValues[axis.tag];
+      if (v != null && Number.isFinite(v)) out[axis.tag] = v;
+    }
+    return out;
+  }
+  const wghtTag = fontAxes(font).some((a) => a.tag === "wght") ? "wght" : fontAxes(font)[0]?.tag;
+  if (wghtTag) out[wghtTag] = layer.axisValue;
+  return out;
+}
+
+/** Fill defaults and clamp a (partial) location to the axis ranges. */
+export function normalizeLocation(font: Font, location: Record<string, number>): Record<string, number> {
+  const out = defaultLocation(font);
+  for (const axis of fontAxes(font)) {
+    const v = location?.[axis.tag];
+    if (v != null && Number.isFinite(v)) out[axis.tag] = Math.max(axis.min, Math.min(axis.max, v));
+  }
+  return out;
+}
+
+/** Full location of an instance (explicit values, else its master's). */
+export function instanceLocation(font: Font, instance: FontInstance): Record<string, number> {
+  const master = font.masters.find((m) => m.id === instance.masterId);
+  const base = master ? masterLocation(font, master) : defaultLocation(font);
+  const out: Record<string, number> = { ...base };
+  for (const axis of fontAxes(font)) {
+    const v = instance.axisValues?.[axis.tag];
+    if (v != null && Number.isFinite(v)) out[axis.tag] = Math.max(axis.min, Math.min(axis.max, v));
+  }
+  return out;
+}
+
+/** Short label for a location, e.g. "wght 550 · wdth 100". */
+export function formatLocation(font: Font, location: Record<string, number>): string {
+  return fontAxes(font).map((a) => `${a.tag} ${Math.round(location[a.tag] ?? a.defaultValue)}`).join(" · ");
 }
 
 export const KAPPA = 0.5522847498307936;
@@ -584,6 +660,15 @@ function interpolatePaths(a: Contour[], b: Contour[], t: number): Contour[] | nu
 // through the glyph's intermediate layers as extra stops. Requires
 // compatible outlines; returns null when contours/nodes do not line up.
 export function interpolateGlyphAt(font: Font, glyphName: string, t: number): Glyph | null {
+  if (font.masters.length < 2) return null;
+  const tag = fontAxes(font)[0]?.tag ?? "wght";
+  const values = font.masters.map((m) => masterLocation(font, m)[tag]);
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const loc = defaultLocation(font);
+  loc[tag] = lo + (hi - lo) * Math.max(0, Math.min(1, t));
+  return interpolateGlyphAtLocation(font, glyphName, loc);
+}
+export function interpolateGlyphAtLegacy(font: Font, glyphName: string, t: number): Glyph | null {
   const glyph = findGlyph(font, glyphName);
   if (!glyph || font.masters.length < 2) return null;
   const sorted = [...font.masters].sort((a, b) => (a.weightValue || 0) - (b.weightValue || 0));
@@ -614,6 +699,127 @@ export function interpolateGlyphAt(font: Font, glyphName: string, t: number): Gl
     width: lerp(glyph.width, glyph.width, t),
     layers: { ...glyph.layers, [font.currentMasterId]: { paths } },
   };
+}
+
+/** Weighted blend of compatible outlines; null when structures differ. */
+function interpolatePathsWeighted(entries: Array<{ paths: Contour[]; weight: number }>): Contour[] | null {
+  if (!entries.length) return null;
+  const first = entries[0].paths;
+  for (const entry of entries) {
+    if (entry.paths.length !== first.length) return null;
+    for (let i = 0; i < first.length; i++) {
+      if (entry.paths[i].closed !== first[i].closed || entry.paths[i].nodes.length !== first[i].nodes.length) return null;
+    }
+  }
+  const total = entries.reduce((sum, e) => sum + e.weight, 0);
+  if (!(total > 0)) return null;
+  const paths: Contour[] = [];
+  for (let i = 0; i < first.length; i++) {
+    paths.push({
+      closed: first[i].closed,
+      nodes: first[i].nodes.map((node, j) => {
+        let x = 0, y = 0;
+        for (const entry of entries) {
+          const n = entry.paths[i].nodes[j];
+          x += n.x * entry.weight; y += n.y * entry.weight;
+        }
+        return { x: Math.round(x / total), y: Math.round(y / total), type: node.type };
+      }),
+    });
+  }
+  return paths;
+}
+function varyingAxisTags(font: Font): string[] {
+  const tags: string[] = [];
+  for (const axis of fontAxes(font)) {
+    const values = font.masters.map((m) => masterLocation(font, m)[axis.tag]);
+    if (values.length && Math.max(...values) - Math.min(...values) > 0.001) tags.push(axis.tag);
+  }
+  return tags;
+}
+/**
+ * Interpolate at a full multi-axis location. Single-axis fonts keep the
+ * piecewise behaviour through intermediates; two or more varying axes
+ * blend grid-corner masters multilinearly (exact at every master) with
+ * an inverse-distance fallback off-grid. Null when a needed layer is
+ * missing or outlines are incompatible.
+ */
+export function interpolateGlyphAtLocation(font: Font, glyphName: string, location: Record<string, number>): Glyph | null {
+  const glyph = findGlyph(font, glyphName);
+  if (!glyph || font.masters.length < 2) return null;
+  const loc = normalizeLocation(font, location);
+  const varying = varyingAxisTags(font);
+  let paths: Contour[] | null = null;
+  if (varying.length <= 1) {
+    const tag = varying[0] ?? fontAxes(font)[0]?.tag ?? "wght";
+    const ordered = [...font.masters].sort((a, b) => masterLocation(font, a)[tag] - masterLocation(font, b)[tag]);
+    const ma = ordered[0], mb = ordered[ordered.length - 1];
+    const la = glyph.layers[ma.id], lb = glyph.layers[mb.id];
+    if (!la || !lb) return null;
+    const w0 = masterLocation(font, ma)[tag], w1 = masterLocation(font, mb)[tag];
+    const target = loc[tag];
+    const stops: Array<{ w: number; paths: Contour[] }> = [
+      { w: w0, paths: la.paths },
+      ...(glyph.intermediates || []).map((s) => ({ w: intermediateLocation(font, s)[tag], paths: s.paths })),
+      { w: w1, paths: lb.paths },
+    ].filter((s) => s.w >= Math.min(w0, w1) - 0.001 && s.w <= Math.max(w0, w1) + 0.001)
+      .sort((a, b) => a.w - b.w);
+    for (let i = 0; i < stops.length - 1; i++) {
+      const a = stops[i], b = stops[i + 1];
+      if (target >= a.w - 0.001 && target <= b.w + 0.001) {
+        const local = b.w === a.w ? 0 : Math.max(0, Math.min(1, (target - a.w) / (b.w - a.w)));
+        paths = interpolatePaths(a.paths, b.paths, local);
+        break;
+      }
+    }
+    if (!paths && stops.length >= 2) {
+      const span = w1 - w0;
+      const t = span ? Math.max(0, Math.min(1, (target - w0) / span)) : 0;
+      paths = interpolatePaths(stops[0].paths, stops[stops.length - 1].paths, t);
+    }
+    if (!paths) return null;
+  } else {
+    const sources: Array<{ location: Record<string, number>; paths: Contour[] }> = [];
+    for (const master of font.masters) {
+      const layer = glyph.layers[master.id];
+      if (!layer) return null;
+      sources.push({ location: masterLocation(font, master), paths: layer.paths });
+    }
+    const lo: Record<string, number> = {}, hi: Record<string, number> = {};
+    for (const tag of varying) {
+      const values = sources.map((s) => s.location[tag]);
+      lo[tag] = Math.min(...values); hi[tag] = Math.max(...values);
+    }
+    const onGrid = sources.every((s) => varying.every((tag) => Math.abs(s.location[tag] - lo[tag]) < 0.01 || Math.abs(s.location[tag] - hi[tag]) < 0.01));
+    let weights: number[];
+    if (onGrid) {
+      weights = sources.map((s) => {
+        let w = 1;
+        for (const tag of varying) {
+          const span = hi[tag] - lo[tag];
+          const t = span ? Math.max(0, Math.min(1, (loc[tag] - lo[tag]) / span)) : 0;
+          w *= Math.abs(s.location[tag] - hi[tag]) < 0.01 ? t : 1 - t;
+        }
+        return w;
+      });
+    } else {
+      weights = sources.map((s) => {
+        let d2 = 0;
+        for (const tag of varying) {
+          const span = (hi[tag] - lo[tag]) || 1;
+          const d = (loc[tag] - s.location[tag]) / span;
+          d2 += d * d;
+        }
+        return d2 < 1e-12 ? 1e12 : 1 / d2;
+      });
+    }
+    paths = interpolatePathsWeighted(sources.map((s, i) => ({ paths: s.paths, weight: weights[i] })));
+    if (!paths) return null;
+  }
+  return { ...glyph, layers: { ...glyph.layers, [font.currentMasterId]: { paths } } };
+}
+export function mastersCompatibleAt(font: Font, glyphName: string, location: Record<string, number>): boolean {
+  return interpolateGlyphAtLocation(font, glyphName, location) !== null;
 }
 
 export function mastersCompatible(font: Font, glyphName: string): boolean {
@@ -707,11 +913,20 @@ export interface XY { x: number; y: number }
 
 /** Masters ordered by axis weight (stable for equal weights). */
 export function sortedMasters(font: Font): FontMaster[] {
+  const tags = fontAxes(font).map((a) => a.tag);
+  return [...font.masters].sort((a, b) => {
+    const la = masterLocation(font, a), lb = masterLocation(font, b);
+    for (const tag of tags) { const d = (la[tag] ?? 0) - (lb[tag] ?? 0); if (d) return d; }
+    return a.name.localeCompare(b.name);
+  });
+}
+export function sortedMastersLegacy(font: Font): FontMaster[] {
   return [...font.masters].sort((a, b) => (a.weightValue || 0) - (b.weightValue || 0));
 }
 
 /** Axis extent from the declared axis, falling back to master weights. */
-export function axisRange(font: Font): { min: number; max: number; defaultValue: number } {
+export function axisRange(font: Font, tag?: string): { min: number; max: number; defaultValue: number } {
+  if (tag) return axisRangeForTag(font, tag);
   const axis = font.axes[0];
   if (axis && axis.max > axis.min) return { min: axis.min, max: axis.max, defaultValue: axis.defaultValue };
   const weights = font.masters.map((m) => m.weightValue || 0);
@@ -770,10 +985,47 @@ export function instanceProgression(font: Font, steps = 5): Array<{ t: number; w
 }
 
 export interface LayerSummary {
+  location?: Record<string, number>;
+  locationLabel?: string;
   masterId: string; masterName: string; weight: number;
   hasLayer: boolean; contours: number; nodes: number;
 }
 
+/** Axis extent for one tag from its declaration, else master locations. */
+export function axisRangeForTag(font: Font, tag: string): { min: number; max: number; defaultValue: number } {
+  const axis = axisByTag(font, tag);
+  if (axis && axis.max > axis.min) return { min: axis.min, max: axis.max, defaultValue: axis.defaultValue };
+  const values = font.masters.map((m) => masterLocation(font, m)[tag] ?? axis?.defaultValue ?? 0);
+  const min = values.length ? Math.min(...values) : (axis?.defaultValue ?? 0);
+  const max = values.length ? Math.max(...values) : min + 300;
+  return { min, max: max > min ? max : min + 300, defaultValue: axis?.defaultValue ?? min };
+}
+/** Masters-extent value for t (0..1) along one axis. */
+export function valueForT(font: Font, tag: string, t: number): number {
+  if (!font.masters.length) return axisRangeForTag(font, tag).defaultValue;
+  const values = font.masters.map((m) => masterLocation(font, m)[tag]);
+  const lo = Math.min(...values), hi = Math.max(...values);
+  return Math.round(lo + (hi - lo) * Math.max(0, Math.min(1, t)));
+}
+/** Stops on one axis for a glyph: masters plus matching brace layers. */
+export function axisStopsForAxis(font: Font, glyph: Glyph, tag: string): AxisStop[] {
+  const stops: AxisStop[] = sortedMasters(font).map((m) => ({
+    weight: masterLocation(font, m)[tag], kind: "master" as const, label: m.name, masterId: m.id,
+  }));
+  for (const stop of glyph.intermediates || []) {
+    stops.push({ weight: intermediateLocation(font, stop)[tag], kind: "intermediate", label: `Intermediate ${formatLocation(font, intermediateLocation(font, stop))}` });
+  }
+  return stops.sort((a, b) => a.weight - b.weight || (a.kind === b.kind ? 0 : a.kind === "master" ? -1 : 1));
+}
+/** Proof locations stepping one axis across the masters extent. */
+export function instanceProgressionForAxis(font: Font, tag: string, base: Record<string, number>, steps = 5): Array<{ t: number; weight: number; location: Record<string, number> }> {
+  const count = Math.max(2, Math.min(9, Math.round(steps) || 5));
+  return Array.from({ length: count }, (_, i) => {
+    const t = i / (count - 1);
+    const weight = valueForT(font, tag, t);
+    return { t, weight, location: { ...normalizeLocation(font, base), [tag]: weight } };
+  });
+}
 /** Per-master outline summary for the layer browser. */
 export function layerSummaries(font: Font, glyph: Glyph): LayerSummary[] {
   return sortedMasters(font).map((master) => {
@@ -781,7 +1033,9 @@ export function layerSummaries(font: Font, glyph: Glyph): LayerSummary[] {
     return {
       masterId: master.id,
       masterName: master.name,
-      weight: master.weightValue || 0,
+      weight: masterLocation(font, master)[fontAxes(font)[0]?.tag ?? "wght"] ?? master.weightValue ?? 0,
+      location: masterLocation(font, master),
+      locationLabel: formatLocation(font, masterLocation(font, master)),
       hasLayer: Boolean(layer),
       contours: layer?.paths.length ?? 0,
       nodes: layer ? layer.paths.reduce((n, c) => n + c.nodes.length, 0) : 0,

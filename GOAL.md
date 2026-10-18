@@ -183,7 +183,9 @@ Shipped: `Font.autohintTT` toggle in Font Info, round-tripped through `.glyphs` 
 - Compile service: detect an optional `ttfautohint` binary (`/health` reports it), add `POST /compile/autohint`, and apply it to variable builds whose manifest requests it. When the binary is unavailable the service returns the original bytes and reports not-applied — never a silent claim.
 - **Exit gate:** toggle round-trips in tests; exported TTF lists `gasp`; with the service running, an autohint-requested export is read back by fontTools showing hinting tables (`fpgm`/`prep`/`cvt `) or an explicit not-applied status; full suite + typecheck + build pass.
 
-### Phase 12B — Multi-axis interpolation
+### Phase 12B — Multi-axis interpolation (complete 2026-10-19)
+
+Shipped: locations (`Record<tag, value>`) across the app — `masterLocation`/`instanceLocation`/`interpolateGlyphAtLocation` in `src/model.ts` (grid-corner masters blend bilinearly, exact at every master; single-axis fonts keep the piecewise path through brace layers), per-axis master/instance locations and add/remove-axis editing in Font Info, a Masters bar axis picker that holds other axes fixed, `.glyphs` axisValues round-trip, and a compile service that builds every declared axis (`/validate` now reports `fvarAxes`). Verified: `npm test` 86/86 (four new 12B tests in `test/interpolation.test.ts`), typecheck + build clean; live compile of a four-master wght×wdth bundle read back `fvar` wght 400/400/700 + wdth 75/100/125 with correct corner/centre instantiation; Edge CDP playthrough 11/11 (`verify12b.mjs`, shots `12b-fontinfo.png`/`12b-mastersbar.png`). Changes left uncommitted on `main` for review.
 
 - Generalize the single-`wght` assumption: Font Info edits multiple axes, masters carry per-axis locations, interpolation evaluates at a multi-axis location, the Masters bar gains an axis picker, and the designspace bundle + compile service build a true multi-axis variable font.
 - **Exit gate:** a two-axis (weight × width) variable font whose fontTools readback shows two `fvar` axes with correct ranges; single-axis fonts behave exactly as before.

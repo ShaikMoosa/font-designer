@@ -113,6 +113,10 @@ def validate_font(font_bytes: bytes) -> dict:
     _ = font["maxp"].numGlyphs
     _ = font["hmtx"]
     name = font["name"].getDebugName(1) if "name" in font else None
+    fvar_axes = []
+    if "fvar" in font:
+        for axis in font["fvar"].axes:
+            fvar_axes.append({"tag": axis.axisTag, "min": axis.minValue, "default": axis.defaultValue, "max": axis.maxValue})
     return {
         "ok": True,
         "fontTools": FONTTOOLS_VERSION,
@@ -122,6 +126,7 @@ def validate_font(font_bytes: bytes) -> dict:
         "cmapMappings": len(mappings),
         "tables": sorted(font.keys()),
         "familyName": name,
+        "fvarAxes": fvar_axes,
         "sha256": hashlib.sha256(font_bytes).hexdigest(),
     }
 
@@ -157,20 +162,33 @@ def compile_variable(bundle_bytes: bytes) -> tuple[bytes, bool]:
                     target = root / f"{parts[1]}.ufo" / parts[2]
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(zf.read(name))
-        masters = sorted(manifest.get("masters") or [], key=lambda m: m.get("weightValue") or 0)
+        masters = list(manifest.get("masters") or [])
         if len(masters) < 2:
             raise RuntimeError("variable build needs at least two masters in the bundle")
         axes = manifest.get("axes") or [{"tag": "wght", "name": "Weight", "min": 400, "defaultValue": 400, "max": 700}]
-        axis = axes[0]
-        axis_name = axis.get("name") or "Weight"
+        def master_value(master, axis):
+            values = master.get("axisValues") or {}
+            tag = axis.get("tag") or "wght"
+            if values.get(tag) is not None:
+                return float(values[tag])
+            if tag == "wght" and master.get("weightValue") is not None:
+                return float(master["weightValue"])
+            return float(axis.get("defaultValue") or 0)
+        axis_names = {}
+        for axis in axes:
+            tag = axis.get("tag") or "wght"
+            axis_names[tag] = axis.get("name") or tag
         doc = DesignSpaceDocument()
-        doc.addAxis(AxisDescriptor(
-            tag=axis.get("tag") or "wght",
-            name=axis_name,
-            minimum=float(axis.get("min") or masters[0].get("weightValue") or 400),
-            default=float(axis.get("defaultValue") or masters[0].get("weightValue") or 400),
-            maximum=float(axis.get("max") or masters[-1].get("weightValue") or 700),
-        ))
+        for axis in axes:
+            tag = axis.get("tag") or "wght"
+            values = [master_value(m, axis) for m in masters]
+            doc.addAxis(AxisDescriptor(
+                tag=tag,
+                name=axis_names[tag],
+                minimum=float(axis.get("min") if axis.get("min") is not None else min(values)),
+                default=float(axis.get("defaultValue") if axis.get("defaultValue") is not None else values[0]),
+                maximum=float(axis.get("max") if axis.get("max") is not None else max(values)),
+            ))
         for master in masters:
             ufo_dir = root / f"{master.get('id')}.ufo"
             if not ufo_dir.exists():
@@ -181,7 +199,7 @@ def compile_variable(bundle_bytes: bytes) -> tuple[bytes, bool]:
                 name=str(master.get("name") or master.get("id")),
                 familyName=str(manifest.get("familyName") or "Untitled"),
                 styleName=str(master.get("name") or "Regular"),
-                location={axis_name: float(master.get("weightValue") or 400)},
+                location={axis_names[a.get("tag") or "wght"]: master_value(master, a) for a in axes},
             ))
         designspace_path = root / "font.designspace"
         doc.write(designspace_path)
