@@ -99,6 +99,7 @@ function setWorkspace(mode: "edit" | "font"): void {
   $("#wsFontBtn").classList.toggle("is-on", mode === "font");
   $("#wsEditBtn").classList.toggle("is-on", mode === "edit");
   $<HTMLButtonElement>("#toggleLeftBtn").disabled = mode === "font";
+  updateChromeToggleLabels();
   renderTabs();
   if (mode === "font") renderFontView();
   else requestAnimationFrame(() => activeEd.refresh(state.font, currentGlyph()));
@@ -108,9 +109,11 @@ function currentGlyph(): Glyph { return findGlyph(state.font, state.currentGlyph
 function setStatus(msg: string): void { $("#statusMsg").textContent = msg; }
 
 function showMeasure(info: MeasureInfo | null): void {
-  $("#measureReadout").textContent = info
+  const message = info
     ? `Measure: ${info.distance} units · dx ${info.dx} · dy ${info.dy} · ${info.angleDeg}°`
     : "";
+  $("#measureReadout").textContent = message;
+  if (message) setStatus(message);
 }
 
 const editorHooks: EditorHooks = {
@@ -431,6 +434,9 @@ function renderHeader() {
     selB.appendChild(opt);
   }
   $<HTMLButtonElement>("#splitBtn").classList.toggle("is-on", state.splitView);
+  const moreSplit = $<HTMLButtonElement>("#moreSplitBtn");
+  moreSplit.classList.toggle("is-on", state.splitView);
+  moreSplit.textContent = state.splitView ? "Close master split" : "Split masters side-by-side";
   $<HTMLElement>("#paneBLabel").hidden = !state.splitView;
   const svgB = $<SVGSVGElement>("#editorSvgB");
   if (state.splitView) svgB.removeAttribute("hidden"); else svgB.setAttribute("hidden", "");
@@ -1545,6 +1551,13 @@ function dispatch(cmd: string): void {
     case "zoom-fit": activeEd.zoomFit(); break;
     case "toggle-guides": setStatus(`Guides ${activeEd.toggleGuides() ? "on" : "off"}.`); break;
     case "toggle-nodes": setStatus(`Nodes ${activeEd.toggleNodes() ? "shown" : "hidden"}.`); break;
+    case "toggle-navigator":
+      if (state.workspace === "font") setStatus("The category navigator is part of Font View and stays visible there.");
+      else toggleChromePanel("left-collapsed", $<HTMLButtonElement>("#toggleLeftBtn"));
+      break;
+    case "toggle-inspector": toggleChromePanel("right-collapsed", $<HTMLButtonElement>("#toggleRightBtn")); break;
+    case "toggle-preview": toggleChromePanel("preview-collapsed", $<HTMLButtonElement>("#togglePreviewBtn")); break;
+    case "reset-layout": resetWorkspaceLayout(); break;
     case "add-glyph": addGlyphFlow(); break;
     case "create-composite": createCompositeFlow(); break;
     case "add-rect": if (g) activeEd.addContour(rectContour(80, 0, 360, 500)); break;
@@ -1588,6 +1601,26 @@ function applyPaneDimension(dimension: PaneDimension, value: number, commit = fa
   }
 }
 
+function updateChromeToggleLabels(): void {
+  const controls: Array<[string, string, boolean]> = [
+    ["#toggleLeftBtn", "glyph navigator", !workspacePrefs.leftCollapsed],
+    ["#toggleRightBtn", "inspector", !workspacePrefs.rightCollapsed],
+    ["#togglePreviewBtn", "preview", !workspacePrefs.previewCollapsed],
+  ];
+  for (const [selector, name, expanded] of controls) {
+    const button = $<HTMLButtonElement>(selector);
+    const label = selector === "#toggleLeftBtn" && state.workspace === "font"
+      ? "Navigator remains visible in Font View"
+      : `${expanded ? "Hide" : "Show"} ${name}`;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  }
+  const previewButton = $<HTMLButtonElement>("#collapsePreviewBtn");
+  const previewLabel = workspacePrefs.previewCollapsed ? "Expand preview" : "Collapse preview";
+  previewButton.title = previewLabel;
+  previewButton.setAttribute("aria-label", previewLabel);
+}
+
 function syncChromePrefs(): void {
   const app = $<HTMLElement>("#app");
   app.style.setProperty("--left-panel-pref", `${workspacePrefs.leftPanel}px`);
@@ -1605,9 +1638,21 @@ function syncChromePrefs(): void {
     button.classList.toggle("is-on", expanded);
     button.setAttribute("aria-pressed", String(expanded));
   }
+  updateChromeToggleLabels();
   applyPaneDimension("leftPanel", workspacePrefs.leftPanel);
   applyPaneDimension("rightPanel", workspacePrefs.rightPanel);
   applyPaneDimension("previewHeight", workspacePrefs.previewHeight);
+}
+
+function resetWorkspaceLayout(): void {
+  Object.assign(workspacePrefs, DEFAULT_WORKSPACE_PREFS);
+  syncChromePrefs();
+  persistWorkspacePrefs();
+  requestAnimationFrame(() => {
+    editor.zoomFit();
+    if (state.splitView) editorB.zoomFit();
+  });
+  setStatus("Workspace layout reset — navigator, inspector, and preview restored to their defaults.");
 }
 
 function setupPaneResizer(selector: string, dimension: PaneDimension): void {
@@ -1665,6 +1710,7 @@ function toggleChromePanel(className: "left-collapsed" | "right-collapsed" | "pr
   if (className === "left-collapsed") workspacePrefs.leftCollapsed = collapsed;
   if (className === "right-collapsed") workspacePrefs.rightCollapsed = collapsed;
   if (className === "preview-collapsed") workspacePrefs.previewCollapsed = collapsed;
+  updateChromeToggleLabels();
   persistWorkspacePrefs();
   requestAnimationFrame(() => {
     editor.refresh(state.font, currentGlyph());
@@ -1761,6 +1807,8 @@ $<HTMLInputElement>("#previewText").addEventListener("input", renderPreview);
 $<HTMLInputElement>("#previewSize").addEventListener("input", renderPreview);
 $("#splitBtn").addEventListener("click", toggleSplitView);
 $("#addMasterBtn").addEventListener("click", addMasterCopy);
+$("#moreSplitBtn").addEventListener("click", toggleSplitView);
+$("#moreAddMasterBtn").addEventListener("click", addMasterCopy);
 $<HTMLSelectElement>("#paneBMaster").addEventListener("change", (ev) => {
   state.paneBMasterId = (ev.target as HTMLSelectElement).value;
   editorB.setMasterOverride(state.paneBMasterId || null);
@@ -1778,6 +1826,9 @@ $("#convertBtn").addEventListener("click", () => dispatch("convert"));
 $("#deleteBtn").addEventListener("click", () => dispatch("delete-sel"));
 $("#undoBtn").addEventListener("click", () => dispatch("undo"));
 $("#redoBtn").addEventListener("click", () => dispatch("redo"));
+document.querySelectorAll<HTMLButtonElement>(".tool-popover .tool-menu button").forEach((button) => {
+  button.addEventListener("click", () => button.closest("details")?.removeAttribute("open"));
+});
 
 document.addEventListener("keydown", (ev) => {
   const tag = document.activeElement?.tagName;
@@ -1789,6 +1840,7 @@ document.addEventListener("keydown", (ev) => {
   if (mod && ev.key.toLowerCase() === "e") { ev.preventDefault(); dispatch("export-ufo"); return; }
   if (mod && ev.key.toLowerCase() === "z" && !ev.shiftKey) { ev.preventDefault(); undo(); return; }
   if ((mod && ev.key.toLowerCase() === "y") || (mod && ev.shiftKey && ev.key.toLowerCase() === "z")) { ev.preventDefault(); redo(); return; }
+  if (mod && ev.altKey && ev.key === "0") { ev.preventDefault(); resetWorkspaceLayout(); return; }
   if (typing) return;
   if (mod && (ev.key === "+" || ev.key === "=")) { ev.preventDefault(); activeEd.zoomBy(1.25); return; }
   if (mod && ev.key === "-") { ev.preventDefault(); activeEd.zoomBy(1 / 1.25); return; }

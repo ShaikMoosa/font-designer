@@ -84,7 +84,7 @@ The remaining gap is workflow fidelity rather than generic visual polish:
 - **Masters and interpolation:** the data model supports masters, instances, intermediate layers, and compatibility checking, but the UI does not yet make overlays, layer visibility, intermediate stops, or instance progression visually understandable.
 - **Direct manipulation:** nodes, handles, alignment, transforms, and filters work, but expert operations should appear near the work with live previews instead of permanently increasing sidebar complexity.
 
-### Ramp R1 — Shell Normalization
+### Ramp R1 — Shell Normalization (complete)
 
 Lock the final application density and workspace behavior before redesigning individual tools:
 
@@ -94,6 +94,8 @@ Lock the final application density and workspace behavior before redesigning ind
 - Keep the toolbar on one row; secondary commands stay in contextual popovers or overflow.
 
 **Exit gate:** no toolbar wrapping, clipped controls, or layout jumps at 1280×720, 1440×900, and 1920×1080, including Windows scaling at 125% and 150%.
+
+**Completed 2026-10-18:** the workspace now has persistent keyboard-accessible splitters, remembered panel visibility and dimensions, a resizable Preview, an in-canvas glyph/zoom HUD, camera-preserving resize behavior, content-driven toolbar overflow, dynamic panel labels, and a reset-layout command. Browser and Electron captures passed at 100%, 125%, and 150% effective scaling with no toolbar or document overflow; the full suite passed with 67 tests plus clean typecheck and production build.
 
 ### Ramp R2 — Font View Parity
 

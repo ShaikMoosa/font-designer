@@ -110,3 +110,18 @@ test("workspace shell keeps panes adjustable and canvas navigation close to the 
   assert.match(css, /--left-panel:\s*clamp/);
   assert.match(css, /#canvasHud/);
 });
+
+test("adaptive toolbar preserves expert commands at narrow effective widths", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const renderer = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../src/style.css", import.meta.url), "utf8");
+  for (const id of ["toolbarMore", "morePathGroup", "moreAlignGroup", "moreSplitBtn", "moreAddMasterBtn"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(html, /data-cmd="reset-layout"/);
+  assert.match(renderer, /function resetWorkspaceLayout\(\)/);
+  assert.match(renderer, /mod && ev\.altKey && ev\.key === "0"/);
+  assert.match(css, /@media \(max-width: 1100px\)/);
+  assert.match(css, /@media \(max-width: 900px\)/);
+  assert.match(css, /\.primary-path-popover, \.primary-align-popover \{ display: none; \}/);
+});
