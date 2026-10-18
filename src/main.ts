@@ -77,8 +77,23 @@ interface WorkspacePrefs {
   editNavScope: EditNavigatorScope;
 }
 
+type TransformOrigin = "top-left" | "top" | "top-right" | "left" | "center" | "right" | "bottom-left" | "bottom" | "bottom-right";
+
+interface PalettePrefs {
+  openSections: string[];
+  dx: number;
+  dy: number;
+  scaleX: number;
+  scaleY: number;
+  rotate: number;
+  skew: number;
+  scaleLocked: boolean;
+  origin: TransformOrigin;
+}
+
 const WORKSPACE_PREFS_KEY = "glyphs-windows.workspace.v1";
 const FONT_VIEW_PREFS_KEY = "glyphs-windows.font-view.v2";
+const PALETTE_PREFS_KEY = "glyphs-windows.palette.v1";
 const LIST_COLUMN_DEFAULTS: Record<string, number> = {
   id: 38, export: 48, name: 132, unicode: 78, script: 82,
   category: 90, status: 94, width: 62, lsb: 56, rsb: 56,
@@ -93,6 +108,12 @@ const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
   rightCollapsed: false,
   previewCollapsed: false,
   editNavScope: "all",
+};
+const DEFAULT_PALETTE_PREFS: PalettePrefs = {
+  openSections: ["dimensions", "transformations", "layers"],
+  dx: 0, dy: 0, scaleX: 100, scaleY: 100, rotate: 0, skew: 0,
+  scaleLocked: true,
+  origin: "center",
 };
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -143,8 +164,34 @@ function loadFontViewPrefs(): FontViewPrefs {
   }
 }
 
+function loadPalettePrefs(): PalettePrefs {
+  try {
+    const stored = JSON.parse(localStorage.getItem(PALETTE_PREFS_KEY) || "{}") as Partial<PalettePrefs>;
+    const validOrigins = new Set<TransformOrigin>(["top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right"]);
+    const value = (candidate: unknown, fallback: number, min: number, max: number): number => {
+      const number = Number(candidate);
+      return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
+    };
+    return {
+      openSections: Array.isArray(stored.openSections) ? stored.openSections.filter((item): item is string => typeof item === "string") : [...DEFAULT_PALETTE_PREFS.openSections],
+      dx: value(stored.dx, 0, -10000, 10000),
+      dy: value(stored.dy, 0, -10000, 10000),
+      scaleX: value(stored.scaleX, 100, -1000, 1000),
+      scaleY: value(stored.scaleY, 100, -1000, 1000),
+      rotate: value(stored.rotate, 0, -360, 360),
+      skew: value(stored.skew, 0, -89, 89),
+      scaleLocked: stored.scaleLocked !== false,
+      origin: validOrigins.has(stored.origin as TransformOrigin) ? stored.origin as TransformOrigin : "center",
+    };
+  } catch {
+    return { ...DEFAULT_PALETTE_PREFS, openSections: [...DEFAULT_PALETTE_PREFS.openSections] };
+  }
+}
+
 const workspacePrefs = loadWorkspacePrefs();
 const fontViewPrefs = loadFontViewPrefs();
+const palettePrefs = loadPalettePrefs();
+const paletteHiddenMasters = new Set<string>();
 
 const state: AppState = {
   font: createDefaultFont(),
@@ -175,6 +222,14 @@ function persistFontViewPrefs(): void {
     } satisfies FontViewPrefs));
   } catch {
     // Font View remains fully usable when persistence is unavailable.
+  }
+}
+
+function persistPalettePrefs(): void {
+  try {
+    localStorage.setItem(PALETTE_PREFS_KEY, JSON.stringify(palettePrefs));
+  } catch {
+    // The Palette remains usable when persistence is unavailable.
   }
 }
 
@@ -226,6 +281,7 @@ const editorHooks: EditorHooks = {
 };
 
 let activeEd: Editor;
+let lastEditTool: Exclude<Tool, "text"> = "select";
 function activateEditor(next: Editor, surface: SVGSVGElement): void {
   activeEd = next;
   document.querySelectorAll<SVGSVGElement>("#panes > svg").forEach((svg) => svg.classList.toggle("is-active-pane", svg === surface));
@@ -235,6 +291,16 @@ function activateEditor(next: Editor, surface: SVGSVGElement): void {
 function updateSelectionReadout(): void {
   const count = activeEd?.getSelectionCount?.() || 0;
   $("#infoSelection").textContent = count ? `${count} node${count === 1 ? "" : "s"} selected` : "No nodes selected";
+  const paletteSelection = document.querySelector<HTMLElement>("#paletteSelectionContext");
+  if (paletteSelection) {
+    const layer = layerOf(currentGlyph());
+    const nodes = layer.paths.reduce((total, contour) => total + contour.nodes.length, 0);
+    paletteSelection.textContent = count ? `${count} selected` : `${layer.paths.length} paths · ${nodes} nodes`;
+  }
+  document.querySelectorAll<HTMLButtonElement>("[data-pal-align]").forEach((button) => { button.disabled = count < 2; });
+  const master = state.font.masters.find((item) => item.id === state.font.currentMasterId);
+  const context = document.querySelector<HTMLElement>("#sideContext");
+  if (context) context.textContent = count ? `${count} nodes · ${currentGlyph().name}` : `${editorToolLabel(lastEditTool)} · ${master?.name || "Layer"}`;
 }
 
 const editor = createEditor($<SVGSVGElement>("#editorSvg"), {
@@ -1234,68 +1300,191 @@ function transformLayer(g: Glyph, fn: (x: number, y: number) => [number, number]
   syncBearings(state.font, g);
 }
 
+function transformOriginPoint(bounds: ReturnType<typeof glyphBounds>, origin: TransformOrigin): [number, number] {
+  if (!bounds) return [0, 0];
+  const x = origin.endsWith("left") || origin === "left" ? bounds.minX : origin.endsWith("right") || origin === "right" ? bounds.maxX : (bounds.minX + bounds.maxX) / 2;
+  const y = origin.startsWith("top") || origin === "top" ? bounds.maxY : origin.startsWith("bottom") || origin === "bottom" ? bounds.minY : (bounds.minY + bounds.maxY) / 2;
+  return [x, y];
+}
+
 function renderPalette(g: Glyph): void {
   const page = $("#side-palette");
   if (!g) { page.innerHTML = '<p class="hint">No glyph selected.</p>'; return; }
+  const layer = layerOf(g);
   const b = glyphBounds(g, state.font.currentMasterId);
   const boundsTxt = b ? `X ${Math.round(b.minX)}…${Math.round(b.maxX)} · Y ${Math.round(b.minY)}…${Math.round(b.maxY)} · W ${Math.round(b.maxX - b.minX)} × H ${Math.round(b.maxY - b.minY)}` : "Empty layer";
+  const selectionCount = activeEd.getSelectionCount();
+  const nodeCount = layer.paths.reduce((total, contour) => total + contour.nodes.length, 0);
+  const currentMaster = state.font.masters.find((master) => master.id === state.font.currentMasterId);
+  const open = (section: string): string => palettePrefs.openSections.includes(section) ? " open" : "";
+  const masterRows = state.font.masters.map((master) => `
+    <div class="layer-row${master.id === state.font.currentMasterId ? " is-active" : ""}${paletteHiddenMasters.has(master.id) ? " is-hidden" : ""}">
+      <button class="layer-visibility icon-btn" data-layer-visibility="${escHtml(master.id)}" type="button" aria-label="${paletteHiddenMasters.has(master.id) ? "Show" : "Hide"} ${escHtml(master.name)} layer" aria-pressed="${!paletteHiddenMasters.has(master.id)}" title="${paletteHiddenMasters.has(master.id) ? "Show layer" : "Hide layer"}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 8s2.3-3.3 6.2-3.3S14.2 8 14.2 8 11.9 11.3 8 11.3 1.8 8 1.8 8Z"/><circle cx="8" cy="8" r="1.6"/>${paletteHiddenMasters.has(master.id) ? '<path d="m3 3 10 10"/>' : ""}</svg></button>
+      <button class="layer-select" data-master-layer="${escHtml(master.id)}" type="button"><span><strong>${escHtml(master.name)}</strong><small>${master.weightValue || 0} weight</small></span></button>
+      <span class="layer-kind">${master.id === state.font.currentMasterId ? "Active" : "Master"}</span>
+    </div>`).join("");
+  const componentRows = (g.components || []).map((component) => `<div class="component-row"><span>${escHtml(component.glyph)}</span><span>${Math.round(component.x)}, ${Math.round(component.y)}</span></div>`).join("");
+  const originCells: TransformOrigin[] = ["top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right"];
+  const originMatrix = originCells.map((origin) => `<button data-origin="${origin}" class="origin-cell${palettePrefs.origin === origin ? " is-on" : ""}" type="button" aria-label="Transform from ${origin.replace("-", " ")}" aria-pressed="${palettePrefs.origin === origin}"><span></span></button>`).join("");
   page.innerHTML = `
-    <p class="hint"><strong>Bounds:</strong> ${boundsTxt}</p>
-    <div class="field-row">
-      <div class="field"><label>Move X</label><input id="palDx" type="number" value="0" /></div>
-      <div class="field"><label>Move Y</label><input id="palDy" type="number" value="0" /></div>
+    <div class="palette-context">
+      <div><strong>${escHtml(g.name)}</strong><span>${escHtml(currentMaster?.name || "Layer")}</span></div>
+      <span id="paletteSelectionContext">${selectionCount ? `${selectionCount} selected` : `${layer.paths.length} paths · ${nodeCount} nodes`}</span>
     </div>
-    <div class="field-row">
-      <div class="field"><label>Scale %</label><input id="palScale" type="number" value="100" /></div>
-      <div class="field"><label>Rotate ° (around origin)</label><input id="palRot" type="number" value="0" /></div>
-    </div>
-    <div class="field-row">
-      <button id="palApply" type="button">Apply transform</button>
-      <button id="palFlipH" type="button">Flip horizontal</button>
-    </div>
-    <div class="field-row">
-      <button id="palFlipV" type="button">Flip vertical</button>
-      <button id="palCopyLayer" type="button">Copy layer to new master…</button>
-    </div>
-    <div class="field"><label>Interpolation preview (first ↔ last master)</label>
-      <input id="palInterp" type="range" min="0" max="100" value="50" />
-      <span id="palInterpLabel" class="hint"></span>
-    </div>
-    <div class="field-row">
-      <button id="palExportInstance" type="button">Export instance UFO</button>
-      <button id="palFixDir" type="button">Fix path direction</button>
-    </div>
-    <div class="field"><button id="palUnion" type="button">Remove overlaps (union, flattens curves)</button></div>
-    <div class="field"><button id="palSubtract" type="button">Subtract overlaps (first contour minus the rest, flattens curves)</button></div>
-    <div class="field"><label>Filters (Phase 9)</label>
-      <div class="field-row"><button id="palExtremes" type="button">Add extremes</button><button id="palFitCurve" type="button">Fit curve</button></div>
-      <div class="field-row"><button id="palRound" type="button">Round corners…</button><button id="palOffset" type="button">Offset curve…</button></div>
-      <div class="field-row"><button id="palResegment" type="button">Re-segment (split at midpoints)</button><button id="palDupes" type="button">Remove duplicate nodes</button></div>
-      <span id="palDupeReport" class="hint"></span>
-    </div>
-    <div class="field"><label>Backup layers (this glyph, active master)</label>
-      <div class="field-row"><button id="palBackup" type="button">+ Backup layer</button></div>
-      <div id="backupList"></div>
-    </div>
-    <div class="field"><label>Intermediate layers (interpolation stops)</label>
-      <div class="field-row"><button id="palAddIntermediate" type="button">+ Intermediate from active layer…</button></div>
-      <div id="intermediateList"></div>
-      <p class="hint">An intermediate is an outline stop at a weight between the outer masters; interpolation and instance exports pass through it. Capture the active layer at a weight, edit the master, repeat. Use Load to copy a stop back into the active layer for editing (undo protects you).</p>
-    </div>
-    <p class="hint">Handbook ref: Palette (p54), Transformations (p56), Interpolation (p150), Filters, Layers. Interpolation needs compatible masters (same contour/node order). Union and Offset flatten curves to lines — undo is available. Use Cut path in the toolbar to open/split a path at the selected node.</p>`;
+    <details class="palette-section" data-palette-section="dimensions"${open("dimensions")}>
+      <summary><span>Dimensions</span><small>${g.width} width</small></summary>
+      <div class="palette-section-body">
+        <p class="measurement-readout">${boundsTxt}</p>
+        <div class="field-row-3 compact-fields">
+          <div class="field"><label>Width</label><input id="palWidth" type="number" value="${g.width}" /></div>
+          <div class="field"><label>LSB</label><input id="palLsb" type="number" value="${g.lsb}" /></div>
+          <div class="field"><label>RSB</label><input id="palRsb" type="number" value="${g.rsb}" /></div>
+        </div>
+      </div>
+    </details>
+    <details class="palette-section" data-palette-section="transformations"${open("transformations")}>
+      <summary><span>Transformations</span><small id="palTransformSummary">Ready</small></summary>
+      <div class="palette-section-body">
+        <div class="transform-layout">
+          <div><span class="control-label">Origin</span><div class="origin-matrix" role="group" aria-label="Transform origin">${originMatrix}</div></div>
+          <div class="transform-values">
+            <div class="field-row compact-fields"><div class="field"><label>Move X</label><input id="palDx" type="number" value="${palettePrefs.dx}" /></div><div class="field"><label>Move Y</label><input id="palDy" type="number" value="${palettePrefs.dy}" /></div></div>
+            <div class="scale-row compact-fields"><div class="field"><label>Scale X %</label><input id="palScaleX" type="number" value="${palettePrefs.scaleX}" /></div><button id="palScaleLock" class="icon-btn${palettePrefs.scaleLocked ? " is-on" : ""}" type="button" aria-label="${palettePrefs.scaleLocked ? "Unlock" : "Lock"} scale proportions" aria-pressed="${palettePrefs.scaleLocked}" title="Lock scale proportions"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 7V5.2a2.5 2.5 0 0 1 5 0V7"/><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/></svg></button><div class="field"><label>Scale Y %</label><input id="palScaleY" type="number" value="${palettePrefs.scaleY}" /></div></div>
+            <div class="field-row compact-fields"><div class="field"><label>Rotate °</label><input id="palRot" type="number" value="${palettePrefs.rotate}" /></div><div class="field"><label>Skew X °</label><input id="palSkew" type="number" min="-89" max="89" value="${palettePrefs.skew}" /></div></div>
+          </div>
+        </div>
+        <div class="transform-icon-row" role="group" aria-label="Transform and alignment controls">
+          <button id="palFlipH" class="icon-btn" type="button" aria-label="Flip horizontal" title="Flip horizontal"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2.5 4.5 6.5 8l-4 3.5ZM13.5 4.5 9.5 8l4 3.5Z"/></svg></button>
+          <button id="palFlipV" class="icon-btn" type="button" aria-label="Flip vertical" title="Flip vertical"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h12M4.5 2.5 8 6.5l3.5-4ZM4.5 13.5 8 9.5l3.5 4Z"/></svg></button>
+          <span class="control-separator"></span>
+          <button data-pal-align="left" class="icon-btn" type="button" aria-label="Align selection left" title="Align left" ${selectionCount < 2 ? "disabled" : ""}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2v12M5 4h7M5 8h5M5 12h8"/></svg></button>
+          <button data-pal-align="hcenter" class="icon-btn" type="button" aria-label="Align selection center" title="Align center" ${selectionCount < 2 ? "disabled" : ""}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M4 4h8M5 8h6M3 12h10"/></svg></button>
+          <button data-pal-align="right" class="icon-btn" type="button" aria-label="Align selection right" title="Align right" ${selectionCount < 2 ? "disabled" : ""}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 2v12M4 4h7M6 8h5M3 12h8"/></svg></button>
+          <button id="palApply" class="primary-action transform-apply" type="button">Apply</button>
+        </div>
+      </div>
+    </details>
+    <details class="palette-section" data-palette-section="layers"${open("layers")}>
+      <summary><span>Layers</span><small>${state.font.masters.length} master${state.font.masters.length === 1 ? "" : "s"}</small></summary>
+      <div class="palette-section-body"><div class="layer-list">${masterRows}</div><div class="palette-actions"><button id="palCopyLayer" type="button">New master from layer…</button></div><div class="subsection-label">Intermediate layers</div><div id="intermediateList"></div><button id="palAddIntermediate" class="quiet-action" type="button">Capture intermediate…</button></div>
+    </details>
+    <details class="palette-section" data-palette-section="components"${open("components")} ${(g.components || []).length ? "" : "hidden"}>
+      <summary><span>Components</span><small>${(g.components || []).length}</small></summary>
+      <div class="palette-section-body"><div class="component-list">${componentRows}</div><button id="palEditComponents" class="quiet-action" type="button">Edit components in Glyph</button></div>
+    </details>
+    <details class="palette-section" data-palette-section="fit"${open("fit")} ${state.font.masters.length > 1 ? "" : "hidden"}>
+      <summary><span>Fit Curve</span><small>Interpolation</small></summary>
+      <div class="palette-section-body"><div class="field"><label>Preview first ↔ last master</label><input id="palInterp" type="range" min="0" max="100" value="50" /><span id="palInterpLabel" class="hint"></span></div><button id="palExportInstance" type="button">Export preview as UFO</button></div>
+    </details>
+    <details class="palette-section" data-palette-section="filters"${open("filters")} ${layer.paths.length ? "" : "hidden"}>
+      <summary><span>Filters</span><small>Outline</small></summary>
+      <div class="palette-section-body"><div class="filter-grid"><button id="palExtremes" type="button">Add extremes</button><button id="palFitCurve" type="button">Fit curve</button><button id="palRound" type="button">Round corners…</button><button id="palOffset" type="button">Offset curve…</button><button id="palResegment" type="button">Re-segment</button><button id="palDupes" type="button">Remove duplicates</button><button id="palFixDir" type="button">Fix direction</button><button id="palUnion" type="button">Union paths</button><button id="palSubtract" class="filter-wide" type="button">Subtract paths</button></div><span id="palDupeReport" class="hint"></span><p class="hint">Union, subtract, and offset flatten curves. Undo restores the original outline.</p></div>
+    </details>
+    <details class="palette-section" data-palette-section="backups"${open("backups")} ${layer.paths.length || (g.backups || []).length ? "" : "hidden"}>
+      <summary><span>Backup layers</span><small>${(g.backups || []).filter((backup) => backup.masterId === state.font.currentMasterId).length}</small></summary>
+      <div class="palette-section-body"><div id="backupList"></div><button id="palBackup" class="quiet-action" type="button">Back up active layer</button></div>
+    </details>`;
+  $<SVGSVGElement>("#editorSvg").classList.toggle("palette-outline-hidden", paletteHiddenMasters.has(state.font.currentMasterId));
+  page.querySelectorAll<HTMLDetailsElement>("[data-palette-section]").forEach((section) => section.addEventListener("toggle", () => {
+    const id = section.dataset.paletteSection;
+    if (!id) return;
+    const openSections = new Set(palettePrefs.openSections);
+    if (section.open) openSections.add(id); else openSections.delete(id);
+    palettePrefs.openSections = [...openSections];
+    persistPalettePrefs();
+  }));
+  bindChange(page.querySelector("#palWidth"), (input) => { g.width = Math.max(0, +input.value || 0); syncBearings(state.font, g); });
+  bindChange(page.querySelector("#palLsb"), (input) => {
+    const next = +input.value || 0;
+    const dx = next - g.lsb;
+    for (const contour of layer.paths) for (const node of contour.nodes) node.x += dx;
+    g.lsb = next; syncBearings(state.font, g);
+  });
+  bindChange(page.querySelector("#palRsb"), (input) => {
+    const bounds = glyphBounds(g, state.font.currentMasterId);
+    g.rsb = +input.value || 0;
+    if (bounds) g.width = Math.max(0, Math.round(bounds.maxX + g.rsb));
+  });
+  page.querySelectorAll<HTMLButtonElement>("[data-master-layer]").forEach((button) => button.addEventListener("click", () => {
+    const masterId = button.dataset.masterLayer;
+    if (!masterId || masterId === state.font.currentMasterId) return;
+    state.font.currentMasterId = masterId;
+    $<SVGSVGElement>("#editorSvg").classList.toggle("palette-outline-hidden", paletteHiddenMasters.has(masterId));
+    editor.refresh(state.font, g); renderAll();
+    setStatus(`Active layer: ${state.font.masters.find((master) => master.id === masterId)?.name || "Master"}.`);
+  }));
+  page.querySelectorAll<HTMLButtonElement>("[data-layer-visibility]").forEach((button) => button.addEventListener("click", () => {
+    const masterId = button.dataset.layerVisibility;
+    if (!masterId) return;
+    if (paletteHiddenMasters.has(masterId)) paletteHiddenMasters.delete(masterId); else paletteHiddenMasters.add(masterId);
+    $<SVGSVGElement>("#editorSvg").classList.toggle("palette-outline-hidden", paletteHiddenMasters.has(state.font.currentMasterId));
+    renderPalette(g);
+    setStatus(`${state.font.masters.find((master) => master.id === masterId)?.name || "Layer"} ${paletteHiddenMasters.has(masterId) ? "hidden" : "visible"}.`);
+  }));
+  qs<HTMLButtonElement>(page, "#palEditComponents").addEventListener("click", () => {
+    document.querySelector<HTMLButtonElement>('[data-side="inspector"]')?.click();
+    requestAnimationFrame(() => qs<HTMLElement>($("#side-inspector"), "#compList").scrollIntoView({ block: "center" }));
+  });
+  const dxInput = qs<HTMLInputElement>(page, "#palDx");
+  const dyInput = qs<HTMLInputElement>(page, "#palDy");
+  const scaleXInput = qs<HTMLInputElement>(page, "#palScaleX");
+  const scaleYInput = qs<HTMLInputElement>(page, "#palScaleY");
+  const rotateInput = qs<HTMLInputElement>(page, "#palRot");
+  const skewInput = qs<HTMLInputElement>(page, "#palSkew");
+  const transformSummary = qs<HTMLElement>(page, "#palTransformSummary");
+  const updateTransformPrefs = (source?: HTMLInputElement): void => {
+    if (palettePrefs.scaleLocked && source === scaleXInput) scaleYInput.value = scaleXInput.value;
+    if (palettePrefs.scaleLocked && source === scaleYInput) scaleXInput.value = scaleYInput.value;
+    palettePrefs.dx = +dxInput.value || 0;
+    palettePrefs.dy = +dyInput.value || 0;
+    palettePrefs.scaleX = +scaleXInput.value || 100;
+    palettePrefs.scaleY = +scaleYInput.value || 100;
+    palettePrefs.rotate = +rotateInput.value || 0;
+    palettePrefs.skew = Math.min(89, Math.max(-89, +skewInput.value || 0));
+    transformSummary.textContent = `${palettePrefs.scaleX} × ${palettePrefs.scaleY}% · ${palettePrefs.rotate}°`;
+    persistPalettePrefs();
+  };
+  [dxInput, dyInput, scaleXInput, scaleYInput, rotateInput, skewInput].forEach((input) => input.addEventListener("input", () => updateTransformPrefs(input)));
+  updateTransformPrefs();
+  qs<HTMLButtonElement>(page, "#palScaleLock").addEventListener("click", (event) => {
+    palettePrefs.scaleLocked = !palettePrefs.scaleLocked;
+    if (palettePrefs.scaleLocked) scaleYInput.value = scaleXInput.value;
+    const button = event.currentTarget as HTMLButtonElement;
+    button.classList.toggle("is-on", palettePrefs.scaleLocked);
+    button.setAttribute("aria-pressed", String(palettePrefs.scaleLocked));
+    button.setAttribute("aria-label", `${palettePrefs.scaleLocked ? "Unlock" : "Lock"} scale proportions`);
+    updateTransformPrefs();
+  });
+  page.querySelectorAll<HTMLButtonElement>("[data-origin]").forEach((button) => button.addEventListener("click", () => {
+    palettePrefs.origin = (button.dataset.origin || "center") as TransformOrigin;
+    page.querySelectorAll<HTMLButtonElement>("[data-origin]").forEach((cell) => {
+      const active = cell === button;
+      cell.classList.toggle("is-on", active); cell.setAttribute("aria-pressed", String(active));
+    });
+    persistPalettePrefs();
+  }));
+  page.querySelectorAll<HTMLButtonElement>("[data-pal-align]").forEach((button) => button.addEventListener("click", () => {
+    activeEd.alignSelection((button.dataset.palAlign || "left") as AlignMode);
+  }));
   qs<HTMLButtonElement>(page, "#palApply").addEventListener("click", () => {
     pushUndo();
-    const dx = +qs<HTMLInputElement>(page, "#palDx").value || 0;
-    const dy = +qs<HTMLInputElement>(page, "#palDy").value || 0;
-    const sc = (+qs<HTMLInputElement>(page, "#palScale").value || 100) / 100;
-    const rad = ((+qs<HTMLInputElement>(page, "#palRot").value || 0) * Math.PI) / 180;
+    updateTransformPrefs();
+    const dx = palettePrefs.dx, dy = palettePrefs.dy;
+    const scaleX = palettePrefs.scaleX / 100, scaleY = palettePrefs.scaleY / 100;
+    const rad = (palettePrefs.rotate * Math.PI) / 180;
+    const skew = Math.tan((palettePrefs.skew * Math.PI) / 180);
     const cos = Math.cos(rad), sin = Math.sin(rad);
+    const [originX, originY] = transformOriginPoint(b, palettePrefs.origin);
     transformLayer(g, (x, y) => {
-      const rx = x * cos - y * sin, ry = x * sin + y * cos;
-      return [rx * sc + dx, ry * sc + dy];
+      const scaledX = (x - originX) * scaleX;
+      const scaledY = (y - originY) * scaleY;
+      const skewedX = scaledX + scaledY * skew;
+      const rx = skewedX * cos - scaledY * sin;
+      const ry = skewedX * sin + scaledY * cos;
+      return [originX + rx + dx, originY + ry + dy];
     });
     editor.refresh(state.font, g); renderAll();
-    setStatus("Transform applied (Ctrl+Z to undo).");
+    setStatus(`Transform applied from ${palettePrefs.origin.replace("-", " ")} (Ctrl+Z to undo).`);
   });
   qs<HTMLButtonElement>(page, "#palFlipH").addEventListener("click", () => {
     if (!b) return; pushUndo();
@@ -1696,8 +1885,6 @@ function renderSide(): void {
   renderFontInfo();
 }
 
-let lastEditTool: Exclude<Tool, "text"> = "select";
-
 function editorToolLabel(tool: Tool): string {
   return tool.charAt(0).toUpperCase() + tool.slice(1);
 }
@@ -1741,6 +1928,7 @@ function setTool(tool: Tool): void {
   editor.setTool(tool);
   editorB.setTool(tool);
   syncEditModeControls(tool);
+  updateSelectionReadout();
   setStatus(tool === "pen" ? "Pen: click to place nodes, drag to pull handles, click the first node to close."
     : tool === "pencil" ? "Pencil: drag a freehand stroke — it becomes an editable open contour on release."
     : tool === "measure" ? "Measure: click two points (snaps to nodes); the readout shows distance and angle. Nothing is modified."
@@ -2027,6 +2215,18 @@ async function runExport(format: string): Promise<void> {
   }
 }
 
+function openWorkflow(name: "fontinfo" | "features" | "export" = "fontinfo"): void {
+  const dialog = $<HTMLDialogElement>("#workflowDialog");
+  document.querySelectorAll<HTMLButtonElement>("[data-workflow]").forEach((button) => {
+    const active = button.dataset.workflow === name;
+    button.classList.toggle("is-on", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  document.querySelectorAll<HTMLElement>(".workflow-page").forEach((page) => page.classList.toggle("is-on", page.id === `side-${name}`));
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(`[data-workflow="${name}"]`)?.focus());
+}
+
 function dispatch(cmd: string): void {
   const g = currentGlyph();
   switch (cmd) {
@@ -2042,7 +2242,7 @@ function dispatch(cmd: string): void {
     case "save-glyphs": void saveGlyphs(); break;
     case "save-glyphs-json": void saveGlyphsJson(); break;
     case "export-ufo": void exportUfo(); break;
-    case "export-font": document.querySelector<HTMLButtonElement>('[data-side="export"]')?.click(); break;
+    case "export-font": openWorkflow("export"); break;
     case "undo": undo(); break;
     case "redo": redo(); break;
     case "delete-sel": activeEd.deleteSelected(); break;
@@ -2315,6 +2515,14 @@ document.querySelectorAll<HTMLButtonElement>("[data-side]").forEach((b) => b.add
   document.querySelectorAll<HTMLButtonElement>("[data-side]").forEach((x) => x.classList.toggle("is-on", x === b));
   document.querySelectorAll<HTMLElement>(".side-page").forEach((p) => p.classList.toggle("is-on", p.id === `side-${b.dataset.side}`));
 }));
+$("#workflowLauncher").addEventListener("click", () => openWorkflow("fontinfo"));
+$("#closeWorkflowDialog").addEventListener("click", () => $<HTMLDialogElement>("#workflowDialog").close());
+document.querySelectorAll<HTMLButtonElement>("[data-workflow]").forEach((button) => button.addEventListener("click", () => {
+  openWorkflow((button.dataset.workflow || "fontinfo") as "fontinfo" | "features" | "export");
+}));
+$<HTMLDialogElement>("#workflowDialog").addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) $<HTMLDialogElement>("#workflowDialog").close();
+});
 $("#gridModeBtn").addEventListener("click", () => {
   state.fontViewScroll[state.fontViewMode] = $<HTMLElement>("#glyphGrid").scrollTop;
   state.fontViewMode = "grid";

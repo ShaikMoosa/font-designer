@@ -173,7 +173,11 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
 
   function render() {
     while (svg.firstChild) svg.removeChild(svg.firstChild);
-    svg.setAttribute("class", state.tool === "hand" ? "tool-hand" : state.tool === "measure" ? "tool-measure" : state.tool === "pencil" ? "tool-pencil" : "");
+    // Preserve host-level state classes (for example Palette layer visibility)
+    // while updating the cursor/tool class owned by the editor.
+    svg.classList.toggle("tool-hand", state.tool === "hand");
+    svg.classList.toggle("tool-measure", state.tool === "measure");
+    svg.classList.toggle("tool-pencil", state.tool === "pencil");
     if (!state.font || !state.glyph) {
       const t = el("text", { x: 24, y: 40, fill: "#9aa6b3", "font-size": 14 });
       t.textContent = "Open a glyph from Font View to start editing.";

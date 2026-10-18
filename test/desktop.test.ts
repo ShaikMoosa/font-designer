@@ -161,3 +161,25 @@ test("R3 Edit View keeps drawing, spacing, navigation, and proofing continuous",
   assert.match(css, /\.edit-nav-grid/);
   assert.match(css, /\.metric-line\.metric-baseline/);
 });
+
+test("R4 Palette is contextual, persistent, and separates document workflows", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const renderer = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../src/style.css", import.meta.url), "utf8");
+  for (const section of ["dimensions", "transformations", "layers", "components", "fit", "filters", "backups"]) {
+    assert.match(renderer, new RegExp(`data-palette-section=\\"${section}\\"`));
+  }
+  for (const id of ["workflowDialog", "workflowLauncher", "closeWorkflowDialog"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(html, /data-workflow="fontinfo"/);
+  assert.match(html, /data-workflow="features"/);
+  assert.match(html, /data-workflow="export"/);
+  assert.match(renderer, /glyphs-windows\.palette\.v1/);
+  assert.match(renderer, /function transformOriginPoint/);
+  assert.match(renderer, /data-origin=/);
+  assert.match(renderer, /function openWorkflow/);
+  assert.match(css, /\.origin-matrix/);
+  assert.match(css, /\.layer-row\.is-active/);
+  assert.match(css, /#workflowDialog::backdrop/);
+});

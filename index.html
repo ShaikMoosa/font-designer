@@ -92,12 +92,33 @@
         </main>
 
         <div id="rightResize" class="pane-resizer pane-resizer-vertical" role="separator" aria-label="Resize inspector" aria-orientation="vertical" aria-valuemin="236" aria-valuemax="380" aria-valuenow="286" tabindex="0"><span aria-hidden="true"></span></div>
-        <aside id="inspector" aria-label="Inspector and Palette">
-          <div class="side-title"><strong>Inspector</strong><span id="sideContext" class="muted">Selection</span></div>
-          <div class="side-tabs" role="tablist" aria-label="Inspector tabs"><button data-side="inspector" class="side-tab is-on" type="button">Glyph</button><button data-side="palette" class="side-tab" type="button">Palette</button><button data-side="kerning" class="side-tab" type="button">Kerning</button><button data-side="features" class="side-tab side-tab-secondary" type="button">Features</button><button data-side="export" class="side-tab side-tab-secondary" type="button">Export</button><button data-side="fontinfo" class="side-tab side-tab-secondary" type="button">Font Info</button></div>
-          <div class="side-pages"><section id="side-inspector" class="side-page is-on"></section><section id="side-palette" class="side-page"></section><section id="side-kerning" class="side-page"></section><section id="side-features" class="side-page"></section><section id="side-export" class="side-page"></section><section id="side-fontinfo" class="side-page"></section></div>
+        <aside id="inspector" aria-label="Contextual Palette">
+          <div class="side-title">
+            <div><strong>Palette</strong><span id="sideContext" class="muted">Selection</span></div>
+            <button id="workflowLauncher" class="icon-btn" type="button" aria-haspopup="dialog" aria-label="Open font workflows" title="Font workflows">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1"/><circle cx="8" cy="8" r="1"/><circle cx="13" cy="8" r="1"/></svg>
+            </button>
+          </div>
+          <div class="side-tabs" role="tablist" aria-label="Palette views"><button data-side="palette" class="side-tab is-on" type="button">Context</button><button data-side="inspector" class="side-tab" type="button">Glyph</button><button data-side="kerning" class="side-tab" type="button">Kerning</button></div>
+          <div class="side-pages"><section id="side-palette" class="side-page is-on"></section><section id="side-inspector" class="side-page"></section><section id="side-kerning" class="side-page"></section></div>
         </aside>
       </div>
+      <dialog id="workflowDialog" aria-labelledby="workflowDialogTitle">
+        <div class="workflow-dialog-shell">
+          <header class="workflow-dialog-header">
+            <div><strong id="workflowDialogTitle">Font workflows</strong><span>Document-wide settings and delivery</span></div>
+            <button id="closeWorkflowDialog" class="icon-btn" type="button" aria-label="Close font workflows" title="Close">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+            </button>
+          </header>
+          <nav class="workflow-tabs" role="tablist" aria-label="Font workflows">
+            <button data-workflow="fontinfo" class="workflow-tab is-on" type="button">Font Info</button>
+            <button data-workflow="features" class="workflow-tab" type="button">Features</button>
+            <button data-workflow="export" class="workflow-tab" type="button">Export</button>
+          </nav>
+          <div class="workflow-pages"><section id="side-fontinfo" class="workflow-page is-on"></section><section id="side-features" class="workflow-page"></section><section id="side-export" class="workflow-page"></section></div>
+        </div>
+      </dialog>
       <footer id="statusbar"><span id="statusMsg">Ready — draw, space, kern, and proof your font.</span><span id="statusRight" class="muted"></span></footer>
     </div>
     <script type="module" src="/src/main.ts"></script>

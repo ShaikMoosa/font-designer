@@ -156,6 +156,15 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   right with independent remembered dimensions. Construction geometry now
   gives outlines, selected nodes, handles, metrics, guides, bearings, and
   ghosts distinct visual priority.
+- **Pre-Phase 12 UI Ramp R4 — Contextual Palette:** The editing sidebar
+  now organizes Dimensions, Transformations, Layers, Components,
+  interpolation, Filters, and Backup layers into contextual, remembered
+  sections. Transformations use a visual origin matrix, linked X/Y scale,
+  move/rotate/skew fields, flip icons, and selection alignment. The visual
+  layer list switches masters, exposes working visibility state, and keeps
+  intermediate and backup actions close to the active layer. Font Info,
+  Features, and Export now open in a focused document-workflow dialog
+  instead of competing with everyday editing tabs.
 - **Font View and glyph data (Phase 10):** A built-in glyph-info
   database suggests Unicode, category, production name, and case for
   known glyph names when adding or renaming glyphs. Renaming rewrites
