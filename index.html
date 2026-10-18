@@ -12,7 +12,7 @@
         <div class="brand"><span class="brand-mark">G</span><span>Glyphs <em>for Windows</em></span><span class="badge">MVP</span></div>
         <nav class="menus" aria-label="Application menus">
           <div class="menu">
-            <button class="menu-btn" type="button">File</button>
+            <button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">File</button>
             <div class="menu-drop">
               <button data-cmd="new" type="button">New Font <kbd>Ctrl+N</kbd></button>
               <button data-cmd="open" type="button">Open… <kbd>Ctrl+O</kbd></button>
@@ -23,7 +23,7 @@
             </div>
           </div>
           <div class="menu">
-            <button class="menu-btn" type="button">Edit</button>
+            <button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">Edit</button>
             <div class="menu-drop">
               <button data-cmd="undo" type="button">Undo <kbd>Ctrl+Z</kbd></button>
               <button data-cmd="redo" type="button">Redo <kbd>Ctrl+Y</kbd></button>
@@ -34,7 +34,7 @@
             </div>
           </div>
           <div class="menu">
-            <button class="menu-btn" type="button">View</button>
+            <button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">View</button>
             <div class="menu-drop">
               <button data-cmd="zoom-in" type="button">Zoom In <kbd>Ctrl++</kbd></button>
               <button data-cmd="zoom-out" type="button">Zoom Out <kbd>Ctrl+-</kbd></button>
@@ -44,7 +44,7 @@
             </div>
           </div>
           <div class="menu">
-            <button class="menu-btn" type="button">Glyph</button>
+            <button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">Glyph</button>
             <div class="menu-drop">
               <button data-cmd="add-glyph" type="button">Add Glyph…</button>
               <button data-cmd="create-composite" type="button">Create Composite (recipe)</button>
@@ -53,6 +53,10 @@
             </div>
           </div>
         </nav>
+        <div class="seg workspace-switch" role="group" aria-label="Workspace">
+          <button id="wsFontBtn" class="seg-btn" type="button">Font View</button>
+          <button id="wsEditBtn" class="seg-btn is-on" type="button">Edit View</button>
+        </div>
         <div class="head-actions">
           <label class="master-pick">Master
             <select id="masterSelect" aria-label="Active master"></select>
@@ -63,18 +67,28 @@
       </header>
       <div id="workbench">
         <aside id="fontview" aria-label="Font View">
-          <div class="panel-head">
-            <strong>Font View</strong>
-            <div class="seg" role="group" aria-label="Font view mode">
-              <button id="gridModeBtn" class="seg-btn is-on" type="button">Grid</button>
-              <button id="listModeBtn" class="seg-btn" type="button">List</button>
-            </div>
+          <div class="fv-rail">
+            <div class="fv-nav-label">Categories</div>
+            <nav id="categoryNav" aria-label="Glyph categories"></nav>
+            <div class="fv-nav-label">Languages</div>
+            <nav id="languageNav" aria-label="Glyph languages"></nav>
+            <section id="glyphDetails" aria-label="Selected glyph details"></section>
           </div>
-          <input id="glyphSearch" type="search" placeholder="Search glyphs (e.g. A, eacute)" aria-label="Search glyphs" />
-          <div id="glyphGrid" class="glyph-grid"></div>
-          <div class="panel-foot">
-            <button id="addGlyphBtn" type="button">+ Glyph</button>
-            <span id="glyphCount" class="muted"></span>
+          <div class="fv-main">
+            <input id="glyphSearch" type="search" placeholder="Search glyphs (e.g. A, eacute)" aria-label="Search glyphs" />
+            <div class="panel-head">
+              <strong id="fontViewTitle">All glyphs</strong>
+              <div class="seg" role="group" aria-label="Font view mode">
+                <button id="gridModeBtn" class="seg-btn is-on" type="button">Grid</button>
+                <button id="listModeBtn" class="seg-btn" type="button">List</button>
+              </div>
+            </div>
+            <div id="glyphGrid" class="glyph-grid"></div>
+            <div class="panel-foot fv-status">
+              <button id="addGlyphBtn" type="button">+ Glyph</button>
+              <span id="glyphCount" class="muted"></span>
+              <label class="fv-size">Size <input id="cellSize" type="range" min="56" max="160" value="88" aria-label="Glyph cell size" /></label>
+            </div>
           </div>
         </aside>
         <main id="editview" aria-label="Edit View">

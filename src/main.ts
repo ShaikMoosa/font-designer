@@ -5,6 +5,7 @@ import {
   cloneFont, kernKey, rectContour, ellipseContour,
   compositeRecipe, interpolateGlyphAt, mastersCompatible, contoursToPathD,
   deleteBackup, restoreBackup, snapshotLayer,
+  GLYPH_CATEGORIES, categoryForGlyph, scriptForGlyph, thumbCanvasSize, fontViewCountText,
 } from "./model.ts";
 import type { AlignMode, Font, Glyph, GlyphLayer } from "./model.ts";
 import { fontToGlyphsJson, glyphsJsonToFont, fontToOpenStep, downloadText, downloadBytes } from "./glyphs-io.ts";
@@ -29,6 +30,8 @@ interface AppState {
   font: Font; currentGlyphName: string; openTabs: string[];
   undoStack: Font[]; redoStack: Font[]; fontViewMode: "grid" | "list";
   splitView: boolean; paneBMasterId: string;
+  workspace: "edit" | "font";
+  fontCategory: string; fontLanguage: string; cellSize: number;
 }
 
 const state: AppState = {
@@ -38,7 +41,17 @@ const state: AppState = {
   undoStack: [], redoStack: [],
   fontViewMode: "grid",
   splitView: false, paneBMasterId: "",
+  workspace: "edit",
+  fontCategory: "All", fontLanguage: "All", cellSize: 88,
 };
+
+function setWorkspace(mode: "edit" | "font"): void {
+  state.workspace = mode;
+  $("#app").classList.toggle("workspace-font", mode === "font");
+  $("#wsFontBtn").classList.toggle("is-on", mode === "font");
+  $("#wsEditBtn").classList.toggle("is-on", mode === "edit");
+  if (mode === "font") renderFontView();
+}
 
 function currentGlyph(): Glyph { return findGlyph(state.font, state.currentGlyphName) || state.font.glyphs[0]; }
 function setStatus(msg: string): void { $("#statusMsg").textContent = msg; }
@@ -131,12 +144,13 @@ function openGlyph(name: string, refit = true): void {
 function drawThumb(canvas: HTMLCanvasElement, glyph: Glyph): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
-  const w = canvas.width = 104, h = canvas.height = 88;
+  const thumb = thumbCanvasSize(state.cellSize, window.devicePixelRatio || 1);
+  const w = canvas.width = thumb.width, h = canvas.height = thumb.height;
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "#e8ecf1";
+  ctx.fillStyle = "#26262c"; // Light theme: dark glyph previews.
   const d = glyphToPathDResolved(state.font, glyph, state.font.currentMasterId);
   if (!d) {
-    ctx.font = "11px Segoe UI"; ctx.fillStyle = "#9aa6b3";
+    ctx.font = "11px Segoe UI"; ctx.fillStyle = "#8a8a94";
     ctx.fillText(glyph.name === "space" ? "space" : "empty", 8, h / 2);
     return;
   }
@@ -151,31 +165,131 @@ function drawThumb(canvas: HTMLCanvasElement, glyph: Glyph): void {
   ctx.restore();
 }
 
-function renderFontView() {
-  const grid = $("#glyphGrid");
+function renderNavList(el: HTMLElement, label: string, items: Array<{ name: string; count: number }>, active: string, onPick: (name: string) => void): void {
+  el.innerHTML = "";
+  const all = document.createElement("button");
+  all.type = "button";
+  all.className = `fv-nav-item${active === "All" ? " is-on" : ""}`;
+  all.textContent = label;
+  all.addEventListener("click", () => onPick("All"));
+  el.appendChild(all);
+  for (const item of items) {
+    if (!item.count) continue;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `fv-nav-item${active === item.name ? " is-on" : ""}`;
+    b.innerHTML = `<span>${escHtml(item.name)}</span><span class="fv-nav-count">${item.count}</span>`;
+    b.addEventListener("click", () => onPick(item.name));
+    el.appendChild(b);
+  }
+}
+
+function renderGlyphDetails(): void {
+  const page = $("#glyphDetails");
+  const g = currentGlyph();
+  if (!g) { page.innerHTML = '<p class="hint">No glyph selected.</p>'; return; }
+  const uni = g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")}` : "—";
+  const layerInfo = state.font.masters.map((m) => {
+    const layer = g.layers[m.id];
+    const nodes = layer ? layer.paths.reduce((n, c) => n + c.nodes.length, 0) : 0;
+    return `${m.name}: ${layer ? layer.paths.length : 0} contour(s), ${nodes} node(s)`;
+  }).join("<br/>");
+  page.innerHTML = `
+    <div class="fv-detail-name">${escHtml(g.name)}</div>
+    <div class="fv-detail-grid">
+      <span>Unicode</span><strong>${uni}</strong>
+      <span>Category</span><strong>${escHtml(categoryForGlyph(g))}</strong>
+      <span>Script</span><strong>${escHtml(scriptForGlyph(g))}</strong>
+      <span>Width</span><strong>${g.width}</strong>
+      <span>Bearings</span><strong>LSB ${g.lsb} · RSB ${g.rsb}</strong>
+      <span>Kerning groups</span><strong>L ${escHtml(g.kerningGroupLeft || "(empty)")} · R ${escHtml(g.kerningGroupRight || "(empty)")}</strong>
+      <span>Components</span><strong>${(g.components || []).length}</strong>
+      <span>Backups</span><strong>${(g.backups || []).length}</strong>
+    </div>
+    <p class="hint">${layerInfo}</p>
+    <p class="hint">Double-click a glyph to edit it. Tags, color labels, and production names arrive with the Phase 10 glyph-data work.</p>`;
+}
+
+function filteredGlyphs(): Glyph[] {
   const q = ($<HTMLInputElement>("#glyphSearch").value || "").trim().toLowerCase();
+  return state.font.glyphs.filter((g) =>
+    (!q || g.name.toLowerCase().includes(q))
+    && (state.fontCategory === "All" || categoryForGlyph(g) === state.fontCategory)
+    && (state.fontLanguage === "All" || scriptForGlyph(g) === state.fontLanguage));
+}
+
+function renderFontView() {
+  const grid = $<HTMLElement>("#glyphGrid");
+  const shown = filteredGlyphs();
+  // Category and language rails.
+  renderNavList($("#categoryNav"), "All",
+    GLYPH_CATEGORIES.map((name) => ({ name, count: state.font.glyphs.filter((g) => categoryForGlyph(g) === name).length })),
+    state.fontCategory, (name) => { state.fontCategory = name; renderFontView(); });
+  const scripts = [...new Set(state.font.glyphs.map((g) => scriptForGlyph(g)))].sort();
+  renderNavList($("#languageNav"), "All languages",
+    scripts.map((name) => ({ name, count: state.font.glyphs.filter((g) => scriptForGlyph(g) === name).length })),
+    state.fontLanguage, (name) => { state.fontLanguage = name; renderFontView(); });
+  const titleParts = [
+    state.fontCategory !== "All" ? state.fontCategory : null,
+    state.fontLanguage !== "All" ? state.fontLanguage : null,
+  ].filter(Boolean);
+  $("#fontViewTitle").textContent = titleParts.length ? titleParts.join(", ") : "All glyphs";
+  grid.style.setProperty("--fv-cell", `${state.cellSize}px`);
   grid.className = `glyph-grid${state.fontViewMode === "list" ? " list-mode" : ""}`;
   grid.innerHTML = "";
-  const shown = state.font.glyphs.filter((g) => !q || g.name.toLowerCase().includes(q));
-  for (const g of shown) {
-    const cell = document.createElement("div");
-    cell.className = `glyph-cell${g.name === state.currentGlyphName ? " is-sel" : ""}`;
-    cell.title = `${g.name} — double-click to edit`;
-    const canvas = document.createElement("canvas");
-    cell.appendChild(canvas);
-    const nm = document.createElement("div"); nm.className = "gname"; nm.textContent = g.name; cell.appendChild(nm);
-    const un = document.createElement("div"); un.className = "guni";
-    un.textContent = g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")} · ${g.width}` : `— · ${g.width}`;
-    cell.appendChild(un);
-    cell.addEventListener("click", () => openGlyph(g.name, false));
-    cell.addEventListener("dblclick", () => openGlyph(g.name, true));
-    grid.appendChild(cell);
-    drawThumb(canvas, g);
+  if (state.fontViewMode === "list" && state.workspace === "font") {
+    const head = document.createElement("div");
+    head.className = "glyph-row glyph-row-head";
+    head.innerHTML = "<span>ID</span><span>Name</span><span>Unicode</span><span>Script</span><span>Category</span><span>Width</span><span>LSB</span><span>RSB</span>";
+    grid.appendChild(head);
+    shown.forEach((g, idx) => {
+      const row = document.createElement("div");
+      row.className = `glyph-row${g.name === state.currentGlyphName ? " is-sel" : ""}`;
+      row.title = `${g.name} — double-click to edit`;
+      row.innerHTML = `<span>${idx}</span><span class="gname">${escHtml(g.name)}</span><span>${g.unicode != null ? g.unicode.toString(16).toUpperCase().padStart(4, "0") : "—"}</span><span>${escHtml(scriptForGlyph(g))}</span><span>${escHtml(categoryForGlyph(g))}</span><span>${g.width}</span><span>${g.lsb}</span><span>${g.rsb}</span>`;
+      row.addEventListener("click", () => openGlyph(g.name, false));
+      row.addEventListener("dblclick", () => { setWorkspace("edit"); openGlyph(g.name, true); });
+      grid.appendChild(row);
+    });
+  } else if (state.fontViewMode === "list") {
+    // Compact list for the narrow Edit View sidebar: name, Unicode, width.
+    const head = document.createElement("div");
+    head.className = "glyph-row-compact glyph-row-head";
+    head.innerHTML = "<span>Name</span><span>Unicode</span><span>Width</span>";
+    grid.appendChild(head);
+    for (const g of shown) {
+      const row = document.createElement("div");
+      row.className = `glyph-row-compact${g.name === state.currentGlyphName ? " is-sel" : ""}`;
+      row.title = `${g.name} — double-click to edit`;
+      row.innerHTML = `<span class="gname">${escHtml(g.name)}</span><span>${g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")}` : "—"}</span><span>${g.width}</span>`;
+      row.addEventListener("click", () => openGlyph(g.name, false));
+      row.addEventListener("dblclick", () => { setWorkspace("edit"); openGlyph(g.name, true); });
+      grid.appendChild(row);
+    }
+  } else {
+    for (const g of shown) {
+      const cell = document.createElement("div");
+      cell.className = `glyph-cell${g.name === state.currentGlyphName ? " is-sel" : ""}`;
+      cell.title = `${g.name} — double-click to edit`;
+      const canvas = document.createElement("canvas");
+      cell.appendChild(canvas);
+      const nm = document.createElement("div"); nm.className = "gname"; nm.textContent = g.name; cell.appendChild(nm);
+      const un = document.createElement("div"); un.className = "guni";
+      un.textContent = g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")} · ${g.width}` : `— · ${g.width}`;
+      cell.appendChild(un);
+      cell.addEventListener("click", () => openGlyph(g.name, false));
+      cell.addEventListener("dblclick", () => { setWorkspace("edit"); openGlyph(g.name, true); });
+      grid.appendChild(cell);
+      drawThumb(canvas, g);
+    }
   }
-  if (!shown.length) grid.innerHTML = '<p class="hint">No glyphs match. Add one with + Glyph.</p>';
-  $("#glyphCount").textContent = `${state.font.glyphs.length} glyphs`;
+  if (!shown.length) grid.innerHTML = '<p class="hint">No glyphs match the current search and filters. Add one with + Glyph.</p>';
+  $("#glyphCount").textContent = fontViewCountText(
+    shown.some((g) => g.name === state.currentGlyphName) ? state.currentGlyphName : "",
+    shown.length, state.font.glyphs.length);
   $("#gridModeBtn").classList.toggle("is-on", state.fontViewMode === "grid");
   $("#listModeBtn").classList.toggle("is-on", state.fontViewMode === "list");
+  renderGlyphDetails();
 }
 
 function renderTabs() {
@@ -183,7 +297,7 @@ function renderTabs() {
   tabs.innerHTML = "";
   const fv = document.createElement("button");
   fv.className = "tab"; fv.type = "button"; fv.textContent = "Font View";
-  fv.addEventListener("click", () => { $<HTMLInputElement>("#glyphSearch").focus(); });
+  fv.addEventListener("click", () => { setWorkspace("font"); $<HTMLInputElement>("#glyphSearch").focus(); });
   tabs.appendChild(fv);
   for (const name of state.openTabs) {
     const b = document.createElement("button");
@@ -282,10 +396,10 @@ function renderPreview() {
         p.setAttribute("d", d);
         if (isMark) {
           p.setAttribute("transform", `translate(${lastBaseX + (item.dx || 0) * s} ${baseline - (item.dy || 0) * s}) scale(${s} ${-s})`);
-          p.setAttribute("fill", "#6fca97");
+          p.setAttribute("fill", "#1f9d63");
         } else {
           p.setAttribute("transform", `translate(${cursor} ${baseline}) scale(${s} ${-s})`);
-          p.setAttribute("fill", "#e8ecf1");
+          p.setAttribute("fill", "#26262c");
         }
         p.setAttribute("fill-rule", "evenodd");
         svg.appendChild(p);
@@ -300,7 +414,7 @@ function renderPreview() {
   const bl = document.createElementNS(SVGNS, "line");
   bl.setAttribute("x1", "0"); bl.setAttribute("x2", String(totalW));
   bl.setAttribute("y1", String(baseline)); bl.setAttribute("y2", String(baseline));
-  bl.setAttribute("stroke", "#3a424e");
+  bl.setAttribute("stroke", "#cfcfd8");
   svg.appendChild(bl);
 }
 
@@ -1143,6 +1257,12 @@ document.querySelectorAll<HTMLButtonElement>("[data-side]").forEach((b) => b.add
 }));
 $("#gridModeBtn").addEventListener("click", () => { state.fontViewMode = "grid"; renderFontView(); });
 $("#listModeBtn").addEventListener("click", () => { state.fontViewMode = "list"; renderFontView(); });
+$("#wsFontBtn").addEventListener("click", () => setWorkspace("font"));
+$("#wsEditBtn").addEventListener("click", () => setWorkspace("edit"));
+$<HTMLInputElement>("#cellSize").addEventListener("input", (ev) => {
+  state.cellSize = +(ev.target as HTMLInputElement).value || 88;
+  renderFontView();
+});
 $<HTMLInputElement>("#glyphSearch").addEventListener("input", renderFontView);
 $("#addGlyphBtn").addEventListener("click", addGlyphFlow);
 $<HTMLSelectElement>("#masterSelect").addEventListener("change", (ev) => {
@@ -1207,6 +1327,46 @@ document.addEventListener("keydown", (ev) => {
   if (k === "m") setTool("measure");
   if (k === "h") setTool("hand");
   if (k === "t") { setTool("text"); $<HTMLInputElement>("#previewText").focus(); }
+});
+
+// Menus: click toggles (touch/keyboard); moving the mouse across the
+// menubar switches only while a menu is already open. Escape and outside
+// clicks close; aria-expanded tracks the open state.
+function closeMenus(except?: HTMLElement): void {
+  document.querySelectorAll<HTMLElement>(".menu").forEach((menu) => {
+    if (menu === except) return;
+    menu.classList.remove("is-open");
+    menu.querySelector<HTMLButtonElement>(".menu-btn")?.setAttribute("aria-expanded", "false");
+  });
+}
+document.querySelectorAll<HTMLElement>(".menu").forEach((menu) => {
+  const btn = menu.querySelector<HTMLButtonElement>(".menu-btn");
+  if (!btn) return;
+  btn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const willOpen = !menu.classList.contains("is-open");
+    closeMenus();
+    menu.classList.toggle("is-open", willOpen);
+    btn.setAttribute("aria-expanded", String(willOpen));
+  });
+  menu.querySelectorAll<HTMLButtonElement>(".menu-drop button").forEach((item) => {
+    item.addEventListener("click", () => closeMenus());
+  });
+  menu.addEventListener("pointerenter", (ev) => {
+    if (ev.pointerType !== "mouse") return;
+    const open = document.querySelector<HTMLElement>(".menu.is-open");
+    if (!open || open === menu) return;
+    closeMenus();
+    menu.classList.add("is-open");
+    btn.setAttribute("aria-expanded", "true");
+  });
+});
+document.addEventListener("click", () => closeMenus());
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape") return;
+  const open = document.querySelector<HTMLElement>(".menu.is-open");
+  closeMenus();
+  open?.querySelector<HTMLButtonElement>(".menu-btn")?.focus();
 });
 
 // Boot. In the Electron shell the native menu drives the same commands.

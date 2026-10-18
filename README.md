@@ -43,7 +43,10 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   Select (drag nodes/handles, arrow-key nudge), Hand (pan), wheel zoom,
   Rect/Ellipse primitives, Convert line/curve, Delete, Close path,
   guides/metrics, anchors, undo/redo (Ctrl+Z / Ctrl+Y).
-- **Font View:** Grid/List, search, thumbnails, add/delete glyphs.
+- **Font View:** Grid/List in both workspaces (full table in Font View,
+  compact list in the Edit View sidebar), search, category and language
+  rails with counts, a selected-glyph details pane, cell-size slider with
+  thumbnails that scale to match, and an honest shown/total count.
 - **Inspector / Palette / Kerning / Font Info:** width & sidebearings,
   Unicode/category/kerning groups, transforms (move/scale/rotate/flip),
   multi-master layer copy, pair kerning with live preview, family/metrics.
@@ -132,6 +135,12 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   at the selected node or splits an open one. Backup layers snapshot a
   glyph's active-master outline, list/restore/delete from the Palette,
   and round-trip through `.glyphs` JSON and OpenStep saves.
+- **UI/UX pass (before Phase 10):** Light Glyphs-like theme with a
+  Font/Edit workspace switch; application menus open on click (mouse
+  users can slide across an open menubar), close on Escape or outside
+  click, and expose `aria-expanded`. Glyph tags, color labels, and
+  production names remain Phase 10 work and are labelled as such in
+  the details pane.
 
 ## Deferred (per Handbook)
 

@@ -241,6 +241,41 @@ export function createDefaultFont(): Font {
 
 export function findGlyph(font: Font, name: string): Glyph | undefined { return font.glyphs.find((g) => g.name === name); }
 
+export const GLYPH_CATEGORIES = ["Letter", "Number", "Separator", "Punctuation", "Symbol", "Mark", "Other"];
+
+/** Font View grouping: the Handbook category for a glyph. */
+export function categoryForGlyph(glyph: Glyph): string {
+  return GLYPH_CATEGORIES.includes(glyph.category) ? glyph.category : "Other";
+}
+
+/** Font View grouping: script/language bucket from the Unicode range. */
+export function scriptForGlyph(glyph: Glyph): string {
+  const u = glyph.unicode;
+  if (u == null) return "No Unicode";
+  if (u <= 0x024f) return "Latin";
+  if (u >= 0x0370 && u <= 0x03ff) return "Greek";
+  if (u >= 0x0400 && u <= 0x04ff) return "Cyrillic";
+  if (u >= 0x0590 && u <= 0x05ff) return "Hebrew";
+  if (u >= 0x0600 && u <= 0x06ff) return "Arabic";
+  if (u >= 0x0900 && u <= 0x097f) return "Devanagari";
+  if (u >= 0x3040 && u <= 0x30ff) return "Japanese";
+  if (u >= 0x4e00 && u <= 0x9fff) return "Chinese";
+  if (u >= 0xac00 && u <= 0xd7af) return "Korean";
+  return "Other";
+}
+
+/** Canvas backing size for a Font View thumbnail at the given cell size. */
+export function thumbCanvasSize(cellSize: number, devicePixelRatio = 1): { width: number; height: number } {
+  const base = Math.max(56, Math.min(160, Math.round(cellSize) || 88));
+  const ratio = Math.max(1, Math.min(2, devicePixelRatio || 1));
+  return { width: Math.round(base * ratio), height: Math.round(base * 0.72 * ratio) };
+}
+
+/** Honest Font View status line: the selected glyph plus shown/total counts. */
+export function fontViewCountText(selectedName: string, shown: number, total: number): string {
+  return selectedName ? `${selectedName} selected · ${shown}/${total} glyphs` : `${shown}/${total} glyphs`;
+}
+
 export function syncBearings(font: Font, glyph: Glyph): void {
   const b = glyphBounds(glyph, font.currentMasterId);
   if (!b) return;
