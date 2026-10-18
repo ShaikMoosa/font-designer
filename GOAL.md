@@ -97,7 +97,7 @@ Lock the final application density and workspace behavior before redesigning ind
 
 **Completed 2026-10-18:** the workspace now has persistent keyboard-accessible splitters, remembered panel visibility and dimensions, a resizable Preview, an in-canvas glyph/zoom HUD, camera-preserving resize behavior, content-driven toolbar overflow, dynamic panel labels, and a reset-layout command. Browser and Electron captures passed at 100%, 125%, and 150% effective scaling with no toolbar or document overflow; the full suite passed with 67 tests plus clean typecheck and production build.
 
-### Ramp R2 — Font View Parity
+### Ramp R2 — Font View Parity (complete)
 
 Turn Font View into a production workspace for fonts containing hundreds or thousands of glyphs:
 
@@ -108,6 +108,8 @@ Turn Font View into a production workspace for fonts containing hundreds or thou
 - Preserve selection, filters, sort order, scroll position, and cell size when switching between Grid and List.
 
 **Exit gate:** fonts containing 100–1,000 glyphs remain fast and scannable; Grid/List switching preserves state; keyboard and mouse selection behave consistently.
+
+**Completed 2026-10-18:** Font View now has size-adaptive glyph-first cells with lazy thumbnail work, a dense sticky-header List with ten resizable data columns plus selection, visible export and outline/component/empty status, persistent Grid/List density and column preferences, named saved filter presets, selection-aware details and batch actions, and Windows-style click/Ctrl-toggle/Shift-range behavior shared by mouse and keyboard. Search, taxonomy, filter, sort, selection, scroll position, and cell size survive Grid/List switching. Verification covered the default font in both views at 1440×900, Ctrl+A plus filtered hidden-selection counts, preset save/restore, and a generated 1,000-glyph font (1,000 cells rendered in about 300 ms with initial/lazy thumbnails and no document overflow), alongside 70 passing tests, clean typecheck, and a production build.
 
 ### Ramp R3 — Edit View Refinement
 

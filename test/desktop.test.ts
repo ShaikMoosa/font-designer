@@ -125,3 +125,20 @@ test("adaptive toolbar preserves expert commands at narrow effective widths", ()
   assert.match(css, /@media \(max-width: 900px\)/);
   assert.match(css, /\.primary-path-popover, \.primary-align-popover \{ display: none; \}/);
 });
+
+test("R2 Font View ships dense Grid/List workflows and persistent expert state", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const renderer = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../src/style.css", import.meta.url), "utf8");
+  for (const id of ["fvSavedFilter", "saveFilterBtn", "fvBatchBar", "deleteSelectedBtn", "clearSelectionBtn"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(html, /aria-multiselectable="true"/);
+  assert.match(renderer, /glyphs-windows\.font-view\.v2/);
+  assert.match(renderer, /updateGlyphSelection/);
+  assert.match(renderer, /setupListColumnResizers/);
+  assert.match(renderer, /IntersectionObserver/);
+  assert.match(renderer, /event\.key\.toLowerCase\(\) === "a"/);
+  assert.match(css, /\.glyph-row-head \{ position: sticky/);
+  assert.match(css, /\.fv-col-resizer/);
+});

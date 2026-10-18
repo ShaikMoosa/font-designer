@@ -5,8 +5,9 @@ import {
   cloneFont, kernKey, rectContour, ellipseContour,
   compositeRecipe, interpolateGlyphAt, mastersCompatible, contoursToPathD,
   deleteBackup, restoreBackup, snapshotLayer,
-  GLYPH_CATEGORIES, categoryForGlyph, scriptForGlyph, thumbCanvasSize, fontViewCountText,
+  GLYPH_CATEGORIES, categoryForGlyph, scriptForGlyph, thumbCanvasSize, fontViewCountText, fontViewSelectionText,
   renameGlyph, moveGlyphInOrder, applyGlyphInfo, glyphMatchesFilter, sortGlyphsForDisplay, GLYPH_FILTERS, parseTags,
+  updateGlyphSelection, glyphHasOutline,
   compatibilityReport, copyLayerBetweenMasters, instanceT, instanceAxisWeight, cloneContours,
 } from "./model.ts";
 import type { GlyphFilter, GlyphSortMode } from "./model.ts";
@@ -37,6 +38,28 @@ interface AppState {
   workspace: "edit" | "font";
   fontCategory: string; fontLanguage: string; cellSize: number;
   glyphFilter: GlyphFilter; glyphSort: GlyphSortMode;
+  selectedGlyphNames: Set<string>; selectionAnchorName: string; focusedGlyphName: string;
+  fontViewScroll: Record<"grid" | "list", number>;
+  activeSavedFilterId: string;
+}
+
+interface SavedFontFilter {
+  id: string;
+  name: string;
+  query: string;
+  category: string;
+  language: string;
+  filter: GlyphFilter;
+  sort: GlyphSortMode;
+}
+
+interface FontViewPrefs {
+  mode: "grid" | "list";
+  cellSize: number;
+  filter: GlyphFilter;
+  sort: GlyphSortMode;
+  listColumns: Record<string, number>;
+  savedFilters: SavedFontFilter[];
 }
 
 interface WorkspacePrefs {
@@ -49,6 +72,11 @@ interface WorkspacePrefs {
 }
 
 const WORKSPACE_PREFS_KEY = "glyphs-windows.workspace.v1";
+const FONT_VIEW_PREFS_KEY = "glyphs-windows.font-view.v2";
+const LIST_COLUMN_DEFAULTS: Record<string, number> = {
+  id: 38, export: 48, name: 132, unicode: 78, script: 82,
+  category: 90, status: 94, width: 62, lsb: 56, rsb: 56,
+};
 const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
   leftPanel: 220,
   rightPanel: 286,
@@ -79,19 +107,69 @@ function loadWorkspacePrefs(): WorkspacePrefs {
   }
 }
 
+function loadFontViewPrefs(): FontViewPrefs {
+  try {
+    const stored = JSON.parse(localStorage.getItem(FONT_VIEW_PREFS_KEY) || "{}") as Partial<FontViewPrefs>;
+    const filterIds = new Set(GLYPH_FILTERS.map((item) => item.id));
+    const columns = { ...LIST_COLUMN_DEFAULTS };
+    for (const key of Object.keys(columns)) {
+      columns[key] = clampNumber(stored.listColumns?.[key], columns[key], key === "name" ? 92 : 42, key === "name" ? 300 : 180);
+    }
+    const savedFilters = Array.isArray(stored.savedFilters)
+      ? stored.savedFilters.filter((item): item is SavedFontFilter => Boolean(item && typeof item.id === "string" && typeof item.name === "string" && filterIds.has(item.filter)))
+      : [];
+    return {
+      mode: stored.mode === "list" ? "list" : "grid",
+      cellSize: clampNumber(stored.cellSize, 112, 56, 160),
+      filter: filterIds.has(stored.filter as GlyphFilter) ? stored.filter as GlyphFilter : "all",
+      sort: stored.sort === "name" || stored.sort === "unicode" ? stored.sort : "order",
+      listColumns: columns,
+      savedFilters,
+    };
+  } catch {
+    return { mode: "grid", cellSize: 112, filter: "all", sort: "order", listColumns: { ...LIST_COLUMN_DEFAULTS }, savedFilters: [] };
+  }
+}
+
 const workspacePrefs = loadWorkspacePrefs();
+const fontViewPrefs = loadFontViewPrefs();
 
 const state: AppState = {
   font: createDefaultFont(),
   currentGlyphName: "A",
   openTabs: ["A"],
   undoStack: [], redoStack: [],
-  fontViewMode: "grid",
+  fontViewMode: fontViewPrefs.mode,
   splitView: false, paneBMasterId: "",
   workspace: "edit",
-  fontCategory: "All", fontLanguage: "All", cellSize: 112,
-  glyphFilter: "all", glyphSort: "order",
+  fontCategory: "All", fontLanguage: "All", cellSize: fontViewPrefs.cellSize,
+  glyphFilter: fontViewPrefs.filter, glyphSort: fontViewPrefs.sort,
+  selectedGlyphNames: new Set(["A"]), selectionAnchorName: "A", focusedGlyphName: "A",
+  fontViewScroll: { grid: 0, list: 0 },
+  activeSavedFilterId: "",
 };
+
+function persistFontViewPrefs(): void {
+  try {
+    localStorage.setItem(FONT_VIEW_PREFS_KEY, JSON.stringify({
+      mode: state.fontViewMode,
+      cellSize: state.cellSize,
+      filter: state.glyphFilter,
+      sort: state.glyphSort,
+      listColumns: fontViewPrefs.listColumns,
+      savedFilters: fontViewPrefs.savedFilters,
+    } satisfies FontViewPrefs));
+  } catch {
+    // Font View remains fully usable when persistence is unavailable.
+  }
+}
+
+function normalizeFontViewSelection(): void {
+  const validNames = new Set(state.font.glyphs.map((glyph) => glyph.name));
+  state.selectedGlyphNames = new Set([...state.selectedGlyphNames].filter((name) => validNames.has(name)));
+  if (!validNames.has(state.selectionAnchorName)) state.selectionAnchorName = state.currentGlyphName;
+  if (!validNames.has(state.focusedGlyphName)) state.focusedGlyphName = state.currentGlyphName;
+}
 
 function setWorkspace(mode: "edit" | "font"): void {
   state.workspace = mode;
@@ -216,12 +294,16 @@ function ensureCurrentGlyph() {
   if (state.currentGlyphName && !state.openTabs.includes(state.currentGlyphName)) {
     state.openTabs.push(state.currentGlyphName);
   }
+  normalizeFontViewSelection();
 }
 
 function openGlyph(name: string, refit = true): void {
   const g = findGlyph(state.font, name);
   if (!g) return;
   state.currentGlyphName = name;
+  state.selectedGlyphNames = new Set([name]);
+  state.selectionAnchorName = name;
+  state.focusedGlyphName = name;
   if (!state.openTabs.includes(name)) state.openTabs.push(name);
   if (refit) { editor.setGlyph(state.font, g); refreshPaneB(true); } else editor.refresh(state.font, g);
   renderAll();
@@ -251,6 +333,22 @@ function drawThumb(canvas: HTMLCanvasElement, glyph: Glyph): void {
   ctx.restore();
 }
 
+const pendingThumbnails = new WeakMap<HTMLCanvasElement, Glyph>();
+const thumbnailObserver = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    const canvas = entry.target as HTMLCanvasElement;
+    const glyph = pendingThumbnails.get(canvas);
+    if (glyph) drawThumb(canvas, glyph);
+    thumbnailObserver?.unobserve(canvas);
+  }
+}, { root: $<HTMLElement>("#glyphGrid"), rootMargin: "180px" });
+
+function queueThumbnail(canvas: HTMLCanvasElement, glyph: Glyph): void {
+  pendingThumbnails.set(canvas, glyph);
+  if (thumbnailObserver) thumbnailObserver.observe(canvas); else drawThumb(canvas, glyph);
+}
+
 function renderNavList(el: HTMLElement, label: string, items: Array<{ name: string; count: number }>, active: string, onPick: (name: string) => void): void {
   el.innerHTML = "";
   const all = document.createElement("button");
@@ -271,8 +369,31 @@ function renderNavList(el: HTMLElement, label: string, items: Array<{ name: stri
 
 function renderGlyphDetails(): void {
   const page = $("#glyphDetails");
-  const g = currentGlyph();
-  if (!g) { page.innerHTML = '<p class="hint">No glyph selected.</p>'; return; }
+  const selected = state.font.glyphs.filter((glyph) => state.selectedGlyphNames.has(glyph.name));
+  if (!selected.length) {
+    page.innerHTML = '<p class="hint">No glyphs selected. Click a glyph, Ctrl-click to toggle, or Shift-click to select a range.</p>';
+    return;
+  }
+  if (selected.length > 1) {
+    const widths = selected.map((glyph) => glyph.width);
+    const outlined = selected.filter((glyph) => glyphHasOutline(state.font, glyph)).length;
+    const composites = selected.filter((glyph) => (glyph.components || []).length > 0).length;
+    const unicode = selected.filter((glyph) => glyph.unicode != null).length;
+    const categories = [...new Set(selected.map(categoryForGlyph))];
+    page.innerHTML = `
+      <div class="fv-detail-glyph fv-detail-count" aria-hidden="true">${selected.length}</div>
+      <div class="fv-detail-name">Selected glyphs</div>
+      <div class="fv-detail-summary">
+        <span>Unicode</span><strong>${unicode}/${selected.length}</strong>
+        <span>Outlines</span><strong>${outlined}/${selected.length}</strong>
+        <span>Components</span><strong>${composites}/${selected.length}</strong>
+        <span>Width range</span><strong>${Math.min(...widths)}–${Math.max(...widths)}</strong>
+        <span>Categories</span><strong>${escHtml(categories.join(", "))}</strong>
+      </div>
+      <p class="hint">Batch actions apply to this selection even when a search or filter hides part of it.</p>`;
+    return;
+  }
+  const g = selected[0];
   const uni = g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")}` : "—";
   const layerInfo = state.font.masters.map((m) => {
     const layer = g.layers[m.id];
@@ -301,68 +422,235 @@ function renderGlyphDetails(): void {
     <p class="hint">Double-click a glyph to edit it. Production name, tags, color label, case, and note are edited in the Inspector.</p>`;
 }
 
-function filteredGlyphs(): Glyph[] {
-  const q = ($<HTMLInputElement>("#glyphSearch").value || "").trim().toLowerCase();
+function glyphsForView(settings: Pick<SavedFontFilter, "query" | "category" | "language" | "filter" | "sort">): Glyph[] {
+  const q = settings.query.trim().toLowerCase();
   const filtered = state.font.glyphs.filter((g) =>
     (!q || g.name.toLowerCase().includes(q))
-    && (state.fontCategory === "All" || categoryForGlyph(g) === state.fontCategory)
-    && (state.fontLanguage === "All" || scriptForGlyph(g) === state.fontLanguage)
-    && glyphMatchesFilter(state.font, g, state.glyphFilter));
-  return sortGlyphsForDisplay(filtered, state.glyphSort);
+    && (settings.category === "All" || categoryForGlyph(g) === settings.category)
+    && (settings.language === "All" || scriptForGlyph(g) === settings.language)
+    && glyphMatchesFilter(state.font, g, settings.filter));
+  return sortGlyphsForDisplay(filtered, settings.sort);
+}
+
+function currentFontViewSettings(): Pick<SavedFontFilter, "query" | "category" | "language" | "filter" | "sort"> {
+  return {
+    query: ($<HTMLInputElement>("#glyphSearch").value || "").trim(),
+    category: state.fontCategory,
+    language: state.fontLanguage,
+    filter: state.glyphFilter,
+    sort: state.glyphSort,
+  };
+}
+
+function filteredGlyphs(): Glyph[] {
+  return glyphsForView(currentFontViewSettings());
+}
+
+function glyphViewStatus(glyph: Glyph): { state: "outline" | "component" | "empty"; label: string } {
+  if ((glyph.components || []).length) return { state: "component", label: "Component" };
+  if (glyphHasOutline(state.font, glyph)) return { state: "outline", label: "Outline" };
+  return { state: "empty", label: "Empty" };
+}
+
+function renderSavedFilters(): void {
+  const nav = $("#savedFilterNav");
+  const select = $<HTMLSelectElement>("#fvSavedFilter");
+  nav.innerHTML = "";
+  select.innerHTML = '<option value="">Current view</option>';
+  if (!fontViewPrefs.savedFilters.length) nav.innerHTML = '<p class="hint">Save the current search and taxonomy as a reusable view.</p>';
+  for (const preset of fontViewPrefs.savedFilters) {
+    const count = glyphsForView(preset).length;
+    const option = document.createElement("option");
+    option.value = preset.id;
+    option.textContent = preset.name;
+    select.appendChild(option);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `fv-nav-item${state.activeSavedFilterId === preset.id ? " is-on" : ""}`;
+    button.innerHTML = `<span class="fv-nav-chev" aria-hidden="true">›</span><span class="fv-nav-letter" aria-hidden="true">F</span><span class="fv-nav-name">${escHtml(preset.name)}</span><span class="fv-nav-count">${count}</span>`;
+    button.addEventListener("click", () => applySavedFilter(preset.id));
+    nav.appendChild(button);
+  }
+  select.value = state.activeSavedFilterId;
+  $<HTMLButtonElement>("#deleteFilterBtn").disabled = !state.activeSavedFilterId;
+}
+
+function applySavedFilter(id: string): void {
+  const preset = fontViewPrefs.savedFilters.find((item) => item.id === id);
+  if (!preset) return;
+  state.activeSavedFilterId = preset.id;
+  state.fontCategory = preset.category;
+  state.fontLanguage = preset.language;
+  state.glyphFilter = preset.filter;
+  state.glyphSort = preset.sort;
+  $<HTMLInputElement>("#glyphSearch").value = preset.query;
+  $<HTMLSelectElement>("#fvFilter").value = preset.filter;
+  $<HTMLSelectElement>("#fvSort").value = preset.sort;
+  state.fontViewScroll[state.fontViewMode] = 0;
+  renderFontView();
+  setStatus(`Saved filter “${preset.name}” applied.`);
+}
+
+function bindFontViewItem(element: HTMLElement, glyph: Glyph, shown: Glyph[], index: number): void {
+  element.id = `fv-glyph-${index}`;
+  element.dataset.glyphName = glyph.name;
+  element.setAttribute("aria-selected", String(state.selectedGlyphNames.has(glyph.name)));
+  element.addEventListener("click", (event) => {
+    if (state.workspace !== "font") { openGlyph(glyph.name, false); return; }
+    const mouse = event as MouseEvent;
+    const mode = mouse.shiftKey ? "range" : (mouse.ctrlKey || mouse.metaKey) ? "toggle" : "replace";
+    commitFontViewSelection(glyph.name, shown, mode);
+    $<HTMLElement>("#glyphGrid").focus({ preventScroll: true });
+  });
+  element.addEventListener("dblclick", () => { setWorkspace("edit"); openGlyph(glyph.name, true); });
+}
+
+function applyListColumnStyles(grid: HTMLElement): void {
+  for (const [key, value] of Object.entries(fontViewPrefs.listColumns)) grid.style.setProperty(`--fv-col-${key}`, `${value}px`);
+}
+
+function setupListColumnResizers(head: HTMLElement, grid: HTMLElement): void {
+  head.querySelectorAll<HTMLElement>("[data-resize-col]").forEach((handle) => {
+    handle.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const key = handle.dataset.resizeCol || "";
+      if (!key || fontViewPrefs.listColumns[key] == null) return;
+      const startX = event.clientX;
+      const startWidth = fontViewPrefs.listColumns[key];
+      handle.classList.add("is-dragging");
+      handle.setPointerCapture(event.pointerId);
+      const move = (moveEvent: PointerEvent) => {
+        const min = key === "name" ? 92 : 42;
+        const max = key === "name" ? 300 : 180;
+        const width = Math.min(max, Math.max(min, Math.round(startWidth + moveEvent.clientX - startX)));
+        fontViewPrefs.listColumns[key] = width;
+        grid.style.setProperty(`--fv-col-${key}`, `${width}px`);
+      };
+      const finish = () => {
+        handle.classList.remove("is-dragging");
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", finish);
+        handle.removeEventListener("pointercancel", finish);
+        persistFontViewPrefs();
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", finish);
+      handle.addEventListener("pointercancel", finish);
+    });
+  });
+}
+
+function updateFontViewSelectionUI(shown = filteredGlyphs()): void {
+  normalizeFontViewSelection();
+  const selectedCount = state.selectedGlyphNames.size;
+  const items = [...document.querySelectorAll<HTMLElement>("#glyphGrid [data-glyph-name]")];
+  for (const item of items) {
+    const name = item.dataset.glyphName || "";
+    const selected = state.selectedGlyphNames.has(name);
+    item.classList.toggle("is-sel", selected);
+    item.classList.toggle("is-current", name === state.focusedGlyphName);
+    item.setAttribute("aria-selected", String(selected));
+  }
+  const active = items.find((item) => item.dataset.glyphName === state.focusedGlyphName);
+  const grid = $<HTMLElement>("#glyphGrid");
+  if (active) grid.setAttribute("aria-activedescendant", active.id); else grid.removeAttribute("aria-activedescendant");
+  $("#glyphCount").textContent = fontViewSelectionText(selectedCount, shown.length, state.font.glyphs.length);
+  $("#fvSelectionHint").textContent = selectedCount ? `${selectedCount} selected` : "No selection";
+  $<HTMLButtonElement>("#applyInfoBtn").disabled = selectedCount === 0;
+  $<HTMLButtonElement>("#batchCategoryBtn").disabled = selectedCount === 0;
+  $<HTMLButtonElement>("#deleteSelectedBtn").disabled = selectedCount === 0 || selectedCount >= state.font.glyphs.length;
+  $<HTMLButtonElement>("#clearSelectionBtn").disabled = selectedCount === 0;
+  const canMove = selectedCount === 1 && state.glyphSort === "order";
+  $<HTMLButtonElement>("#moveGlyphPrevBtn").disabled = !canMove;
+  $<HTMLButtonElement>("#moveGlyphNextBtn").disabled = !canMove;
+  renderGlyphDetails();
+}
+
+function commitFontViewSelection(name: string, shown: Glyph[], mode: "replace" | "toggle" | "range"): void {
+  const ordered = shown.map((glyph) => glyph.name);
+  const next = updateGlyphSelection([...state.selectedGlyphNames], ordered, name, mode, state.selectionAnchorName);
+  state.selectedGlyphNames = new Set(next);
+  if (mode !== "range") state.selectionAnchorName = name;
+  state.focusedGlyphName = name;
+  const primaryName = state.selectedGlyphNames.has(name) ? name : next[next.length - 1] || name;
+  const glyph = findGlyph(state.font, primaryName);
+  if (glyph) {
+    state.currentGlyphName = glyph.name;
+    editor.refresh(state.font, glyph);
+    refreshPaneB(false);
+    renderHeader();
+    renderSide();
+    renderPreview();
+  }
+  updateFontViewSelectionUI(shown);
+  setStatus(fontViewSelectionText(state.selectedGlyphNames.size, shown.length, state.font.glyphs.length));
 }
 
 function renderFontView() {
   const grid = $<HTMLElement>("#glyphGrid");
+  const previousMode = grid.dataset.viewMode as "grid" | "list" | undefined;
+  if (previousMode) state.fontViewScroll[previousMode] = grid.scrollTop;
+  grid.querySelectorAll<HTMLCanvasElement>("canvas").forEach((canvas) => thumbnailObserver?.unobserve(canvas));
   const shown = filteredGlyphs();
-  // Category and language rails.
   renderNavList($("#categoryNav"), "All",
     GLYPH_CATEGORIES.map((name) => ({ name, count: state.font.glyphs.filter((g) => categoryForGlyph(g) === name).length })),
-    state.fontCategory, (name) => { state.fontCategory = name; renderFontView(); });
+    state.fontCategory, (name) => { state.fontCategory = name; state.activeSavedFilterId = ""; state.fontViewScroll[state.fontViewMode] = 0; renderFontView(); });
   const scripts = [...new Set(state.font.glyphs.map((g) => scriptForGlyph(g)))].sort();
   renderNavList($("#languageNav"), "All languages",
     scripts.map((name) => ({ name, count: state.font.glyphs.filter((g) => scriptForGlyph(g) === name).length })),
-    state.fontLanguage, (name) => { state.fontLanguage = name; renderFontView(); });
-  const titleParts = [
-    state.fontCategory !== "All" ? state.fontCategory : null,
-    state.fontLanguage !== "All" ? state.fontLanguage : null,
-  ].filter(Boolean);
+    state.fontLanguage, (name) => { state.fontLanguage = name; state.activeSavedFilterId = ""; state.fontViewScroll[state.fontViewMode] = 0; renderFontView(); });
+  renderSavedFilters();
+  const titleParts = [state.fontCategory !== "All" ? state.fontCategory : null, state.fontLanguage !== "All" ? state.fontLanguage : null].filter(Boolean);
   $("#fontViewTitle").textContent = titleParts.length ? titleParts.join(", ") : "All glyphs";
+  const sortLabel = state.glyphSort === "name" ? "Name order" : state.glyphSort === "unicode" ? "Unicode order" : "Font order";
+  $("#fontViewSubtitle").textContent = state.fontViewMode === "list" ? `${sortLabel} · resizable columns` : `${sortLabel} · ${state.cellSize}px cells`;
   grid.style.setProperty("--fv-cell", `${state.cellSize}px`);
-  grid.className = `glyph-grid${state.fontViewMode === "list" ? " list-mode" : ""}`;
+  grid.className = `glyph-grid${state.fontViewMode === "list" ? " list-mode" : ""}${state.cellSize < 78 ? " is-compact" : ""}${state.cellSize >= 124 ? " is-roomy" : ""}`;
+  grid.dataset.viewMode = state.fontViewMode;
+  grid.setAttribute("role", state.fontViewMode === "list" && state.workspace === "font" ? "grid" : "listbox");
+  applyListColumnStyles(grid);
   grid.innerHTML = "";
   if (state.fontViewMode === "list" && state.workspace === "font") {
     const head = document.createElement("div");
     head.className = "glyph-row glyph-row-head";
-    head.innerHTML = "<span>ID</span><span>Name</span><span>Unicode</span><span>Script</span><span>Category</span><span>Width</span><span>LSB</span><span>RSB</span>";
+    head.setAttribute("role", "row");
+    const columns: Array<[string, string]> = [["", ""], ["id", "ID"], ["export", "Export"], ["name", "Name"], ["unicode", "Unicode"], ["script", "Script"], ["category", "Category"], ["status", "Status"], ["width", "Width"], ["lsb", "LSB"], ["rsb", "RSB"]];
+    head.innerHTML = columns.map(([key, label], index) => `<span class="${index === 0 ? "fv-row-select" : ""}" role="columnheader">${label}${key ? `<i class="fv-col-resizer" data-resize-col="${key}" aria-hidden="true"></i>` : ""}</span>`).join("");
     grid.appendChild(head);
+    setupListColumnResizers(head, grid);
+    const fragment = document.createDocumentFragment();
     shown.forEach((g, idx) => {
+      const status = glyphViewStatus(g);
       const row = document.createElement("div");
-      row.className = `glyph-row${g.name === state.currentGlyphName ? " is-sel" : ""}`;
+      row.className = `glyph-row${state.selectedGlyphNames.has(g.name) ? " is-sel" : ""}${g.name === state.focusedGlyphName ? " is-current" : ""}`;
+      row.setAttribute("role", "row");
       row.title = `${g.name} — double-click to edit`;
-      row.innerHTML = `<span>${idx}</span><span class="gname">${escHtml(g.name)}</span><span>${g.unicode != null ? g.unicode.toString(16).toUpperCase().padStart(4, "0") : "—"}</span><span>${escHtml(scriptForGlyph(g))}</span><span>${escHtml(categoryForGlyph(g))}</span><span>${g.width}</span><span>${g.lsb}</span><span>${g.rsb}</span>`;
-      row.addEventListener("click", () => openGlyph(g.name, false));
-      row.addEventListener("dblclick", () => { setWorkspace("edit"); openGlyph(g.name, true); });
-      grid.appendChild(row);
+      row.innerHTML = `<span class="fv-row-select"><i class="fv-selection-box" aria-hidden="true"></i></span><span class="numeric">${state.font.glyphs.indexOf(g)}</span><span class="fv-export-mark"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg>Yes</span><span class="gname">${escHtml(g.name)}</span><span class="numeric">${g.unicode != null ? g.unicode.toString(16).toUpperCase().padStart(4, "0") : "—"}</span><span>${escHtml(scriptForGlyph(g))}</span><span>${escHtml(categoryForGlyph(g))}</span><span class="fv-status-tag" data-state="${status.state}"><i class="fv-status-dot" aria-hidden="true"></i>${status.label}</span><span class="numeric">${g.width}</span><span class="numeric">${g.lsb}</span><span class="numeric">${g.rsb}</span>`;
+      bindFontViewItem(row, g, shown, idx);
+      fragment.appendChild(row);
     });
+    grid.appendChild(fragment);
   } else if (state.fontViewMode === "list") {
-    // Compact list for the narrow Edit View sidebar: name, Unicode, width.
     const head = document.createElement("div");
     head.className = "glyph-row-compact glyph-row-head";
     head.innerHTML = "<span>Name</span><span>Unicode</span><span>Width</span>";
     grid.appendChild(head);
-    for (const g of shown) {
+    shown.forEach((g, idx) => {
       const row = document.createElement("div");
       row.className = `glyph-row-compact${g.name === state.currentGlyphName ? " is-sel" : ""}`;
       row.title = `${g.name} — double-click to edit`;
       row.innerHTML = `<span class="gname">${escHtml(g.name)}</span><span>${g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")}` : "—"}</span><span>${g.width}</span>`;
-      row.addEventListener("click", () => openGlyph(g.name, false));
-      row.addEventListener("dblclick", () => { setWorkspace("edit"); openGlyph(g.name, true); });
+      bindFontViewItem(row, g, shown, idx);
       grid.appendChild(row);
-    }
+    });
   } else {
-    for (const g of shown) {
+    const fragment = document.createDocumentFragment();
+    shown.forEach((g, idx) => {
+      const status = glyphViewStatus(g);
       const cell = document.createElement("div");
-      cell.className = `glyph-cell${g.name === state.currentGlyphName ? " is-sel" : ""}`;
+      cell.className = `glyph-cell${state.selectedGlyphNames.has(g.name) ? " is-sel" : ""}${g.name === state.focusedGlyphName ? " is-current" : ""}`;
+      cell.setAttribute("role", "option");
       cell.title = `${g.name} — double-click to edit`;
       const canvas = document.createElement("canvas");
       cell.appendChild(canvas);
@@ -373,23 +661,97 @@ function renderFontView() {
         dot.title = `Color label: ${COLOR_LABELS[g.colorLabel].name}`;
         cell.appendChild(dot);
       }
-      const nm = document.createElement("div"); nm.className = "gname"; nm.textContent = g.name; cell.appendChild(nm);
-      const un = document.createElement("div"); un.className = "guni";
-      un.textContent = g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")}` : "—";
-      cell.appendChild(un);
-      cell.addEventListener("click", () => openGlyph(g.name, false));
-      cell.addEventListener("dblclick", () => { setWorkspace("edit"); openGlyph(g.name, true); });
-      grid.appendChild(cell);
-      drawThumb(canvas, g);
-    }
+      const name = document.createElement("div"); name.className = "gname"; name.textContent = g.name; cell.appendChild(name);
+      const meta = document.createElement("div"); meta.className = "gmeta";
+      meta.innerHTML = `<span class="guni">${g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")}` : "—"}</span><span class="gstatus">${status.label}</span>`;
+      cell.appendChild(meta);
+      bindFontViewItem(cell, g, shown, idx);
+      fragment.appendChild(cell);
+      if (idx < 80) drawThumb(canvas, g); else queueThumbnail(canvas, g);
+    });
+    grid.appendChild(fragment);
   }
-  if (!shown.length) grid.innerHTML = '<p class="hint">No glyphs match the current search and filters. Add one with + Glyph.</p>';
-  $("#glyphCount").textContent = fontViewCountText(
-    shown.some((g) => g.name === state.currentGlyphName) ? state.currentGlyphName : "",
-    shown.length, state.font.glyphs.length);
+  if (!shown.length) grid.innerHTML = '<p class="hint">No glyphs match the current search and filters. Clear a filter or add a glyph.</p>';
+  updateFontViewSelectionUI(shown);
   $("#gridModeBtn").classList.toggle("is-on", state.fontViewMode === "grid");
   $("#listModeBtn").classList.toggle("is-on", state.fontViewMode === "list");
-  renderGlyphDetails();
+  $<HTMLButtonElement>("#gridModeBtn").setAttribute("aria-pressed", String(state.fontViewMode === "grid"));
+  $<HTMLButtonElement>("#listModeBtn").setAttribute("aria-pressed", String(state.fontViewMode === "list"));
+  $<HTMLElement>(".fv-size").hidden = state.workspace === "font" && state.fontViewMode === "list";
+  requestAnimationFrame(() => { grid.scrollTop = state.fontViewScroll[state.fontViewMode]; });
+}
+
+function scrollFocusedFontItem(): void {
+  const item = [...document.querySelectorAll<HTMLElement>("#glyphGrid [data-glyph-name]")]
+    .find((candidate) => candidate.dataset.glyphName === state.focusedGlyphName);
+  item?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function handleFontViewKeydown(event: KeyboardEvent): void {
+  if (state.workspace !== "font") return;
+  const shown = filteredGlyphs();
+  if (!shown.length) return;
+  const names = shown.map((glyph) => glyph.name);
+  let index = Math.max(0, names.indexOf(state.focusedGlyphName));
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+    event.preventDefault();
+    state.selectedGlyphNames = new Set(names);
+    state.selectionAnchorName = names[0];
+    state.focusedGlyphName = names[names.length - 1];
+    state.currentGlyphName = state.focusedGlyphName;
+    updateFontViewSelectionUI(shown);
+    scrollFocusedFontItem();
+    setStatus(fontViewSelectionText(names.length, names.length, state.font.glyphs.length));
+    return;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    setWorkspace("edit");
+    openGlyph(names[index], true);
+    return;
+  }
+  if (event.key === " " || event.key === "Spacebar") {
+    event.preventDefault();
+    commitFontViewSelection(names[index], shown, event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "replace");
+    scrollFocusedFontItem();
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    state.selectedGlyphNames.clear();
+    updateFontViewSelectionUI(shown);
+    setStatus("Font View selection cleared.");
+    return;
+  }
+  if (event.key === "Delete") {
+    event.preventDefault();
+    $<HTMLButtonElement>("#deleteSelectedBtn").click();
+    return;
+  }
+  const items = [...document.querySelectorAll<HTMLElement>("#glyphGrid [data-glyph-name]")];
+  const firstTop = items[0]?.offsetTop ?? 0;
+  const columns = state.fontViewMode === "list" ? 1 : Math.max(1, items.filter((item) => item.offsetTop === firstTop).length);
+  const pageRows = Math.max(1, Math.floor($<HTMLElement>("#glyphGrid").clientHeight / Math.max(1, items[0]?.offsetHeight || state.cellSize)) - 1);
+  let nextIndex = index;
+  if (event.key === "ArrowLeft") nextIndex -= 1;
+  else if (event.key === "ArrowRight") nextIndex += 1;
+  else if (event.key === "ArrowUp") nextIndex -= columns;
+  else if (event.key === "ArrowDown") nextIndex += columns;
+  else if (event.key === "PageUp") nextIndex -= columns * pageRows;
+  else if (event.key === "PageDown") nextIndex += columns * pageRows;
+  else if (event.key === "Home") nextIndex = 0;
+  else if (event.key === "End") nextIndex = names.length - 1;
+  else return;
+  event.preventDefault();
+  nextIndex = Math.max(0, Math.min(names.length - 1, nextIndex));
+  const nextName = names[nextIndex];
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey) {
+    state.focusedGlyphName = nextName;
+    updateFontViewSelectionUI(shown);
+  } else {
+    commitFontViewSelection(nextName, shown, event.shiftKey ? "range" : "replace");
+  }
+  scrollFocusedFontItem();
 }
 
 function renderTabs() {
@@ -612,6 +974,9 @@ function renderInspector(g: Glyph): void {
     }
     state.openTabs = state.openTabs.map((n) => (n === old ? next : n));
     state.currentGlyphName = next;
+    if (state.selectedGlyphNames.delete(old)) state.selectedGlyphNames.add(next);
+    if (state.selectionAnchorName === old) state.selectionAnchorName = next;
+    if (state.focusedGlyphName === old) state.focusedGlyphName = next;
     setStatus(`Renamed ${old} to ${next} — components, metrics keys, and kerning pairs updated.`);
   });
   const suggestion = glyphSuggestionFor(g.name);
@@ -761,6 +1126,9 @@ function renderInspector(g: Glyph): void {
     state.font.glyphs = state.font.glyphs.filter((x) => x !== g);
     state.openTabs = state.openTabs.filter((n) => n !== g.name);
     state.currentGlyphName = state.font.glyphs[0].name;
+    state.selectedGlyphNames = new Set([state.currentGlyphName]);
+    state.selectionAnchorName = state.currentGlyphName;
+    state.focusedGlyphName = state.currentGlyphName;
     editor.setGlyph(state.font, currentGlyph()); renderAll();
   });
 }
@@ -1353,6 +1721,10 @@ function applyOpenedFont(font: Font, fileName: string): void {
   state.undoStack = []; state.redoStack = [];
   state.currentGlyphName = state.font.glyphs[0]?.name || "";
   state.openTabs = state.currentGlyphName ? [state.currentGlyphName] : [];
+  state.selectedGlyphNames = new Set(state.currentGlyphName ? [state.currentGlyphName] : []);
+  state.selectionAnchorName = state.currentGlyphName;
+  state.focusedGlyphName = state.currentGlyphName;
+  state.fontViewScroll = { grid: 0, list: 0 };
   ensureCurrentGlyph();
   editor.setGlyph(state.font, currentGlyph());
   renderAll();
@@ -1533,6 +1905,8 @@ function dispatch(cmd: string): void {
       if (!confirm("Start a new font? Unsaved changes in this tab will be lost (export first if needed).")) return;
       state.font = createDefaultFont(); state.undoStack = []; state.redoStack = [];
       state.currentGlyphName = "A"; state.openTabs = ["A"];
+      state.selectedGlyphNames = new Set(["A"]); state.selectionAnchorName = "A"; state.focusedGlyphName = "A";
+      state.fontViewScroll = { grid: 0, list: 0 };
       editor.setGlyph(state.font, currentGlyph()); renderAll(); setStatus("New font — Handbook Sans starter set.");
       break;
     case "open": openFontFlow(); break;
@@ -1724,8 +2098,18 @@ document.querySelectorAll<HTMLButtonElement>("[data-side]").forEach((b) => b.add
   document.querySelectorAll<HTMLButtonElement>("[data-side]").forEach((x) => x.classList.toggle("is-on", x === b));
   document.querySelectorAll<HTMLElement>(".side-page").forEach((p) => p.classList.toggle("is-on", p.id === `side-${b.dataset.side}`));
 }));
-$("#gridModeBtn").addEventListener("click", () => { state.fontViewMode = "grid"; renderFontView(); });
-$("#listModeBtn").addEventListener("click", () => { state.fontViewMode = "list"; renderFontView(); });
+$("#gridModeBtn").addEventListener("click", () => {
+  state.fontViewScroll[state.fontViewMode] = $<HTMLElement>("#glyphGrid").scrollTop;
+  state.fontViewMode = "grid";
+  persistFontViewPrefs();
+  renderFontView();
+});
+$("#listModeBtn").addEventListener("click", () => {
+  state.fontViewScroll[state.fontViewMode] = $<HTMLElement>("#glyphGrid").scrollTop;
+  state.fontViewMode = "list";
+  persistFontViewPrefs();
+  renderFontView();
+});
 {
   const filterSel = $<HTMLSelectElement>("#fvFilter");
   for (const f of GLYPH_FILTERS) {
@@ -1733,15 +2117,60 @@ $("#listModeBtn").addEventListener("click", () => { state.fontViewMode = "list";
     opt.value = f.id; opt.textContent = f.label;
     filterSel.appendChild(opt);
   }
-  filterSel.addEventListener("change", () => { state.glyphFilter = filterSel.value as GlyphFilter; renderFontView(); });
+  filterSel.value = state.glyphFilter;
+  filterSel.addEventListener("change", () => {
+    state.glyphFilter = filterSel.value as GlyphFilter;
+    state.activeSavedFilterId = "";
+    state.fontViewScroll[state.fontViewMode] = 0;
+    persistFontViewPrefs();
+    renderFontView();
+  });
   const sortSel = $<HTMLSelectElement>("#fvSort");
-  sortSel.addEventListener("change", () => { state.glyphSort = sortSel.value as GlyphSortMode; renderFontView(); });
+  sortSel.value = state.glyphSort;
+  sortSel.addEventListener("change", () => {
+    state.glyphSort = sortSel.value as GlyphSortMode;
+    state.activeSavedFilterId = "";
+    state.fontViewScroll[state.fontViewMode] = 0;
+    persistFontViewPrefs();
+    renderFontView();
+  });
 }
+$<HTMLSelectElement>("#fvSavedFilter").addEventListener("change", (event) => {
+  const id = (event.target as HTMLSelectElement).value;
+  if (id) applySavedFilter(id);
+});
+$("#saveFilterBtn").addEventListener("click", () => {
+  const proposed = prompt("Name this saved Font View:", "Working set");
+  const name = proposed?.trim();
+  if (!name) return;
+  const existing = fontViewPrefs.savedFilters.find((preset) => preset.name.toLowerCase() === name.toLowerCase());
+  const preset: SavedFontFilter = {
+    id: existing?.id || `filter-${Date.now().toString(36)}`,
+    name,
+    ...currentFontViewSettings(),
+  };
+  if (existing) Object.assign(existing, preset); else fontViewPrefs.savedFilters.push(preset);
+  state.activeSavedFilterId = preset.id;
+  persistFontViewPrefs();
+  renderSavedFilters();
+  setStatus(`Saved filter “${name}”.`);
+});
+$("#deleteFilterBtn").addEventListener("click", () => {
+  const active = fontViewPrefs.savedFilters.find((preset) => preset.id === state.activeSavedFilterId);
+  if (!active) return;
+  fontViewPrefs.savedFilters = fontViewPrefs.savedFilters.filter((preset) => preset.id !== active.id);
+  state.activeSavedFilterId = "";
+  persistFontViewPrefs();
+  renderSavedFilters();
+  setStatus(`Deleted saved filter “${active.name}”.`);
+});
 $("#applyInfoBtn").addEventListener("click", () => {
+  if (!state.selectedGlyphNames.size) return;
   pushUndo();
-  const changed = applyGlyphInfo(state.font);
+  const changed = applyGlyphInfo(state.font, state.selectedGlyphNames);
+  if (!changed) state.undoStack.pop();
   renderAll();
-  setStatus(changed ? `Glyph info applied to ${changed} glyph(s) — Unicode, category, production name, and case filled from the database.` : "Glyph info is already complete for every known glyph name.");
+  setStatus(changed ? `Glyph info applied to ${changed} selected glyph(s).` : "Glyph info is already complete for the selected glyphs.");
 });
 $("#moveGlyphPrevBtn").addEventListener("click", () => {
   pushUndo();
@@ -1756,16 +2185,38 @@ $("#moveGlyphNextBtn").addEventListener("click", () => {
   setStatus(`${state.currentGlyphName} moved later in the glyph order.`);
 });
 $("#batchCategoryBtn").addEventListener("click", () => {
-  const shown = filteredGlyphs();
-  if (!shown.length) { setStatus("No glyphs are currently shown — nothing to update."); return; }
-  const value = prompt(`Category for the ${shown.length} shown glyph(s). One of: ${GLYPH_CATEGORIES.join(", ")}`, shown[0].category || "Letter");
+  const selected = state.font.glyphs.filter((glyph) => state.selectedGlyphNames.has(glyph.name));
+  if (!selected.length) { setStatus("Select one or more glyphs first."); return; }
+  const value = prompt(`Category for ${selected.length} selected glyph(s). One of: ${GLYPH_CATEGORIES.join(", ")}`, selected[0].category || "Letter");
   if (value == null) return;
   const category = GLYPH_CATEGORIES.find((c) => c.toLowerCase() === value.trim().toLowerCase());
   if (!category) { setStatus(`Unknown category "${value.trim()}" — use one of: ${GLYPH_CATEGORIES.join(", ")}.`); return; }
   pushUndo();
-  for (const g of shown) g.category = category;
+  for (const g of selected) g.category = category;
   renderAll();
-  setStatus(`Category ${category} applied to ${shown.length} shown glyph(s).`);
+  setStatus(`Category ${category} applied to ${selected.length} selected glyph(s).`);
+});
+$("#clearSelectionBtn").addEventListener("click", () => {
+  state.selectedGlyphNames.clear();
+  updateFontViewSelectionUI();
+  setStatus("Font View selection cleared.");
+});
+$("#deleteSelectedBtn").addEventListener("click", () => {
+  const selected = state.font.glyphs.filter((glyph) => state.selectedGlyphNames.has(glyph.name));
+  if (!selected.length) return;
+  if (selected.length >= state.font.glyphs.length) { setStatus("Keep at least one glyph in the font."); return; }
+  if (!confirm(`Delete ${selected.length} selected glyph${selected.length === 1 ? "" : "s"}? This can be undone.`)) return;
+  pushUndo();
+  const names = new Set(selected.map((glyph) => glyph.name));
+  state.font.glyphs = state.font.glyphs.filter((glyph) => !names.has(glyph.name));
+  state.openTabs = state.openTabs.filter((name) => !names.has(name));
+  state.currentGlyphName = state.font.glyphs[0].name;
+  state.selectedGlyphNames = new Set([state.currentGlyphName]);
+  state.selectionAnchorName = state.currentGlyphName;
+  state.focusedGlyphName = state.currentGlyphName;
+  editor.setGlyph(state.font, currentGlyph());
+  renderAll();
+  setStatus(`Deleted ${selected.length} glyph${selected.length === 1 ? "" : "s"}.`);
 });
 $("#wsFontBtn").addEventListener("click", () => setWorkspace("font"));
 $("#wsEditBtn").addEventListener("click", () => setWorkspace("edit"));
@@ -1784,11 +2235,23 @@ $("#nextGlyphBtn").addEventListener("click", () => navigateGlyph(1));
 $("#zoomOutBtn").addEventListener("click", () => activeEd.zoomBy(1 / 1.25));
 $("#zoomInBtn").addEventListener("click", () => activeEd.zoomBy(1.25));
 $("#zoomFitBtn").addEventListener("click", () => activeEd.zoomFit());
+$<HTMLInputElement>("#cellSize").value = String(state.cellSize);
 $<HTMLInputElement>("#cellSize").addEventListener("input", (ev) => {
   state.cellSize = +(ev.target as HTMLInputElement).value || 88;
+  persistFontViewPrefs();
   renderFontView();
 });
-$<HTMLInputElement>("#glyphSearch").addEventListener("input", renderFontView);
+let fontSearchTimer = 0;
+$<HTMLInputElement>("#glyphSearch").addEventListener("input", () => {
+  state.activeSavedFilterId = "";
+  state.fontViewScroll[state.fontViewMode] = 0;
+  window.clearTimeout(fontSearchTimer);
+  fontSearchTimer = window.setTimeout(renderFontView, 70);
+});
+$<HTMLElement>("#glyphGrid").addEventListener("keydown", handleFontViewKeydown);
+$<HTMLElement>("#glyphGrid").addEventListener("scroll", () => {
+  state.fontViewScroll[state.fontViewMode] = $<HTMLElement>("#glyphGrid").scrollTop;
+}, { passive: true });
 $("#addGlyphBtn").addEventListener("click", addGlyphFlow);
 $<HTMLSelectElement>("#masterSelect").addEventListener("change", (ev) => {
   const target = ev.target as HTMLSelectElement;

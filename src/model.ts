@@ -296,6 +296,41 @@ export function fontViewCountText(selectedName: string, shown: number, total: nu
   return selectedName ? `${selectedName} selected · ${shown}/${total} glyphs` : `${shown}/${total} glyphs`;
 }
 
+/** Font View status for multi-selection: selection, visible result set, font total. */
+export function fontViewSelectionText(selected: number, visible: number, total: number): string {
+  return `${Math.max(0, selected)} selected · ${Math.max(0, visible)} visible · ${Math.max(0, total)} total`;
+}
+
+export type GlyphSelectionMode = "replace" | "toggle" | "range";
+
+/**
+ * Windows-style selection semantics shared by Font View's Grid and List.
+ * Range selection follows the current filtered/sorted display order.
+ */
+export function updateGlyphSelection(
+  current: readonly string[],
+  orderedNames: readonly string[],
+  target: string,
+  mode: GlyphSelectionMode,
+  anchor = "",
+): string[] {
+  if (!orderedNames.includes(target)) return [...current];
+  if (mode === "toggle") {
+    const next = new Set(current);
+    if (next.has(target)) next.delete(target); else next.add(target);
+    return orderedNames.filter((name) => next.has(name));
+  }
+  if (mode === "range") {
+    const anchorIndex = orderedNames.indexOf(anchor);
+    const targetIndex = orderedNames.indexOf(target);
+    if (anchorIndex < 0) return [target];
+    const start = Math.min(anchorIndex, targetIndex);
+    const end = Math.max(anchorIndex, targetIndex);
+    return orderedNames.slice(start, end + 1);
+  }
+  return [target];
+}
+
 // --- Phase 10: glyph data operations ---
 
 export type GlyphFilter = "all" | "with-unicode" | "without-unicode" | "with-outline" | "empty" | "components" | "colored";
@@ -377,9 +412,10 @@ export function moveGlyphInOrder(font: Font, name: string, direction: -1 | 1): b
  * database (and correct the category for known names). Returns how many
  * glyphs changed.
  */
-export function applyGlyphInfo(font: Font): number {
+export function applyGlyphInfo(font: Font, glyphNames?: ReadonlySet<string>): number {
   let changed = 0;
   for (const g of font.glyphs) {
+    if (glyphNames && !glyphNames.has(g.name)) continue;
     const info = glyphInfoFor(g.name);
     if (!info) continue;
     let touched = false;

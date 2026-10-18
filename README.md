@@ -139,6 +139,13 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   Font/Edit workspace switch; application menus open on click (mouse
   users can slide across an open menubar), close on Escape or outside
   click, and expose `aria-expanded`.
+- **Pre-Phase 12 UI Ramp R2 — Font View parity:** Grid View now scales
+  glyph-first cells from compact to metadata-rich layouts and defers
+  off-screen thumbnail work; List View is a sticky-header, resizable-
+  column table with export and outline status. Both views share Windows-
+  style click/Ctrl/Shift multi-selection, keyboard navigation, selection-
+  aware batch actions, named filter presets, honest selected/visible/total
+  counts, and persistent density, sort, filter, scroll, and column state.
 - **Font View and glyph data (Phase 10):** A built-in glyph-info
   database suggests Unicode, category, production name, and case for
   known glyph names when adding or renaming glyphs. Renaming rewrites

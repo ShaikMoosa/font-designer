@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createDefaultFont, findGlyph, categoryForGlyph, scriptForGlyph, thumbCanvasSize, fontViewCountText } from "../src/model.ts";
+import { createDefaultFont, findGlyph, categoryForGlyph, scriptForGlyph, thumbCanvasSize, fontViewCountText, fontViewSelectionText, updateGlyphSelection } from "../src/model.ts";
 import type { Glyph } from "../src/model.ts";
 
 function glyph(name: string, unicode: number | null, category: string): Glyph {
@@ -46,4 +46,18 @@ test("Font View count text names the selection only when present", () => {
   assert.equal(fontViewCountText("A", 3, 12), "A selected · 3/12 glyphs");
   assert.equal(fontViewCountText("", 3, 12), "3/12 glyphs");
   assert.equal(fontViewCountText("", 0, 12), "0/12 glyphs");
+});
+
+test("Font View multi-selection status reports selected, visible, and total counts", () => {
+  assert.equal(fontViewSelectionText(3, 24, 800), "3 selected · 24 visible · 800 total");
+  assert.equal(fontViewSelectionText(0, 0, 800), "0 selected · 0 visible · 800 total");
+});
+
+test("Font View selection follows replace, Ctrl-toggle, and Shift-range semantics", () => {
+  const shown = ["A", "B", "C", "D", "E"];
+  assert.deepEqual(updateGlyphSelection(["A"], shown, "C", "replace", "A"), ["C"]);
+  assert.deepEqual(updateGlyphSelection(["B"], shown, "D", "toggle", "B"), ["B", "D"]);
+  assert.deepEqual(updateGlyphSelection(["B", "D"], shown, "B", "toggle", "B"), ["D"]);
+  assert.deepEqual(updateGlyphSelection(["B"], shown, "E", "range", "B"), ["B", "C", "D", "E"]);
+  assert.deepEqual(updateGlyphSelection(["A"], shown, "D", "range", "missing"), ["D"]);
 });
