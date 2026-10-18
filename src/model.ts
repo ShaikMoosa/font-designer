@@ -2,6 +2,7 @@
 // baseline y=0. A glyph stores width/lsb/rsb plus one layer per master.
 // Each layer holds contours; a contour is an ordered node list where
 // type is "line" | "curve" | "smooth" (on-curve) or "offcurve" (handle).
+import { glyphInfoFor } from "./glyphinfo.ts";
 export type NodeType = "line" | "curve" | "smooth" | "offcurve";
 export interface FontNode { x: number; y: number; type: NodeType }
 export interface Contour { closed: boolean; nodes: FontNode[] }
@@ -20,6 +21,15 @@ export interface Glyph {
   components: ComponentRef[]; metricsKeyLeft: string; metricsKeyRight: string;
   smartParams?: SmartParam[];
   backups?: BackupLayer[];
+  // Phase 10 glyph data. productionName empty means "derive from
+  // glyph-info"; colorLabel is an index into COLOR_LABELS or -1/undefined
+  // for none; scriptOverride beats the Unicode-range guess.
+  productionName?: string;
+  tags?: string[];
+  colorLabel?: number;
+  note?: string;
+  glyphCase?: "" | "upper" | "lower";
+  scriptOverride?: string;
 }
 
 export function cloneContours(paths: Contour[]): Contour[] {
@@ -250,6 +260,7 @@ export function categoryForGlyph(glyph: Glyph): string {
 
 /** Font View grouping: script/language bucket from the Unicode range. */
 export function scriptForGlyph(glyph: Glyph): string {
+  if (glyph.scriptOverride) return glyph.scriptOverride;
   const u = glyph.unicode;
   if (u == null) return "No Unicode";
   if (u <= 0x024f) return "Latin";
@@ -274,6 +285,107 @@ export function thumbCanvasSize(cellSize: number, devicePixelRatio = 1): { width
 /** Honest Font View status line: the selected glyph plus shown/total counts. */
 export function fontViewCountText(selectedName: string, shown: number, total: number): string {
   return selectedName ? `${selectedName} selected · ${shown}/${total} glyphs` : `${shown}/${total} glyphs`;
+}
+
+// --- Phase 10: glyph data operations ---
+
+export type GlyphFilter = "all" | "with-unicode" | "without-unicode" | "with-outline" | "empty" | "components" | "colored";
+
+export const GLYPH_FILTERS: Array<{ id: GlyphFilter; label: string }> = [
+  { id: "all", label: "All glyphs" },
+  { id: "with-unicode", label: "With Unicode" },
+  { id: "without-unicode", label: "Without Unicode" },
+  { id: "with-outline", label: "With outlines" },
+  { id: "empty", label: "Empty (no outlines)" },
+  { id: "components", label: "Composites (components)" },
+  { id: "colored", label: "With color label" },
+];
+
+/** True when any master layer of the glyph has at least one contour. */
+export function glyphHasOutline(font: Font, glyph: Glyph): boolean {
+  return font.masters.some((m) => (glyph.layers[m.id]?.paths.length ?? 0) > 0);
+}
+
+export function glyphMatchesFilter(font: Font, glyph: Glyph, filter: GlyphFilter): boolean {
+  switch (filter) {
+    case "all": return true;
+    case "with-unicode": return glyph.unicode != null;
+    case "without-unicode": return glyph.unicode == null;
+    case "with-outline": return glyphHasOutline(font, glyph);
+    case "empty": return !glyphHasOutline(font, glyph);
+    case "components": return (glyph.components || []).length > 0;
+    case "colored": return glyph.colorLabel != null && glyph.colorLabel >= 0;
+  }
+}
+
+export type GlyphSortMode = "order" | "name" | "unicode";
+
+/** Display order for the Font View; the font's own order is untouched. */
+export function sortGlyphsForDisplay(glyphs: Glyph[], mode: GlyphSortMode): Glyph[] {
+  const copy = [...glyphs];
+  if (mode === "name") copy.sort((a, b) => a.name.localeCompare(b.name));
+  if (mode === "unicode") copy.sort((a, b) => (a.unicode ?? 0x110000) - (b.unicode ?? 0x110000) || a.name.localeCompare(b.name));
+  return copy;
+}
+
+/**
+ * Rename a glyph and every reference to it: component bases, metrics keys,
+ * and kerning pair keys. Returns false (changing nothing) for an empty,
+ * unchanged, or duplicate name.
+ */
+export function renameGlyph(font: Font, oldName: string, newName: string): boolean {
+  const next = newName.trim();
+  if (!next || next === oldName) return false;
+  const glyph = findGlyph(font, oldName);
+  if (!glyph || findGlyph(font, next)) return false;
+  glyph.name = next;
+  for (const g of font.glyphs) {
+    for (const c of g.components || []) if (c.glyph === oldName) c.glyph = next;
+    if (g.metricsKeyLeft === oldName) g.metricsKeyLeft = next;
+    if (g.metricsKeyRight === oldName) g.metricsKeyRight = next;
+  }
+  const kerning: Record<string, number> = {};
+  for (const [k, v] of Object.entries(font.kerning)) {
+    const [l, r] = k.split("|");
+    kerning[`${l === oldName ? next : l}|${r === oldName ? next : r}`] = v;
+  }
+  font.kerning = kerning;
+  return true;
+}
+
+/** Move a glyph one step in the font's glyph order. False at the edges. */
+export function moveGlyphInOrder(font: Font, name: string, direction: -1 | 1): boolean {
+  const idx = font.glyphs.findIndex((g) => g.name === name);
+  const target = idx + direction;
+  if (idx < 0 || target < 0 || target >= font.glyphs.length) return false;
+  const [glyph] = font.glyphs.splice(idx, 1);
+  font.glyphs.splice(target, 0, glyph);
+  return true;
+}
+
+/**
+ * Fill missing Unicode, production name, and case from the glyph-info
+ * database (and correct the category for known names). Returns how many
+ * glyphs changed.
+ */
+export function applyGlyphInfo(font: Font): number {
+  let changed = 0;
+  for (const g of font.glyphs) {
+    const info = glyphInfoFor(g.name);
+    if (!info) continue;
+    let touched = false;
+    if (g.unicode == null) { g.unicode = info.unicode; touched = true; }
+    if (!g.productionName && info.production) { g.productionName = info.production; touched = true; }
+    if (!g.glyphCase && info.glyphCase) { g.glyphCase = info.glyphCase; touched = true; }
+    if (g.category !== info.category) { g.category = info.category; touched = true; }
+    if (touched) changed++;
+  }
+  return changed;
+}
+
+/** Parse a comma-separated tag field into a clean list. */
+export function parseTags(text: string): string[] {
+  return [...new Set(text.split(",").map((t) => t.trim()).filter(Boolean))];
 }
 
 export function syncBearings(font: Font, glyph: Glyph): void {

@@ -76,6 +76,18 @@
           </div>
           <div class="fv-main">
             <input id="glyphSearch" type="search" placeholder="Search glyphs (e.g. A, eacute)" aria-label="Search glyphs" />
+          <div class="fv-controls">
+            <label>Filter <select id="fvFilter" aria-label="Glyph filter"></select></label>
+            <label>Sort <select id="fvSort" aria-label="Glyph sort order">
+              <option value="order">Font order</option>
+              <option value="name">Name</option>
+              <option value="unicode">Unicode</option>
+            </select></label>
+            <button id="applyInfoBtn" type="button">Apply glyph info</button>
+            <button id="moveGlyphPrevBtn" type="button">← Move</button>
+            <button id="moveGlyphNextBtn" type="button">Move →</button>
+            <button id="batchCategoryBtn" type="button">Category for shown…</button>
+          </div>
             <div class="panel-head">
               <strong id="fontViewTitle">All glyphs</strong>
               <div class="seg" role="group" aria-label="Font view mode">

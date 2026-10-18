@@ -138,9 +138,18 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
 - **UI/UX pass (before Phase 10):** Light Glyphs-like theme with a
   Font/Edit workspace switch; application menus open on click (mouse
   users can slide across an open menubar), close on Escape or outside
-  click, and expose `aria-expanded`. Glyph tags, color labels, and
-  production names remain Phase 10 work and are labelled as such in
-  the details pane.
+  click, and expose `aria-expanded`.
+- **Font View and glyph data (Phase 10):** A built-in glyph-info
+  database suggests Unicode, category, production name, and case for
+  known glyph names when adding or renaming glyphs. Renaming rewrites
+  component bases, metrics keys, and kerning pairs. The Font View adds
+  filters (Unicode, outlines, empty, composites, color labels), display
+  sorting (font order, name, Unicode), and batch actions (apply glyph
+  info, set category for the shown glyphs, move a glyph in the font
+  order). Production name, tags, color label, case, script override,
+  and note live on the glyph, are edited in the Inspector, shown in the
+  details pane, and round-trip through `.glyphs` (JSON and OpenStep)
+  and UFO GLIF files.
 
 ## Deferred (per Handbook)
 

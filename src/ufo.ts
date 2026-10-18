@@ -6,7 +6,11 @@ import { effectiveFeatureCode } from "./shaping.ts";
 import type { Anchor, Contour, Font, FontNode, Glyph } from "./model.ts";
 
 export interface ZipFile { name: string; data: string | Uint8Array }
-export interface ParsedGlif { name: string; unicode: number | null; width: number; paths: Contour[]; anchors: Anchor[] }
+export interface ParsedGlif {
+  name: string; unicode: number | null; width: number; paths: Contour[]; anchors: Anchor[];
+  productionName?: string; tags?: string[]; colorLabel?: number; note?: string;
+  glyphCase?: "" | "upper" | "lower"; scriptOverride?: string;
+}
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -134,6 +138,16 @@ export function glyphToGlif(glyph: Glyph, masterId: string, contoursOverride?: C
   }
   lines.push("  </outline>");
   for (const a of glyph.anchors || []) lines.push(`  <anchor name="${esc(a.name)}" x="${a.x}" y="${a.y}"/>`);
+  if (glyph.note) lines.push(`  <note>${esc(glyph.note)}</note>`);
+  const lib: string[] = [];
+  if (glyph.productionName) lib.push(`    <key>com.glyphswindows.productionName</key>\n    <string>${esc(glyph.productionName)}</string>`);
+  if (glyph.tags?.length) {
+    lib.push(`    <key>com.glyphswindows.tags</key>\n    <array>\n${glyph.tags.map((t) => `      <string>${esc(t)}</string>`).join("\n")}\n    </array>`);
+  }
+  if (glyph.colorLabel != null && glyph.colorLabel >= 0) lib.push(`    <key>com.glyphswindows.colorLabel</key>\n    <integer>${glyph.colorLabel}</integer>`);
+  if (glyph.glyphCase) lib.push(`    <key>com.glyphswindows.case</key>\n    <string>${esc(glyph.glyphCase)}</string>`);
+  if (glyph.scriptOverride) lib.push(`    <key>com.glyphswindows.script</key>\n    <string>${esc(glyph.scriptOverride)}</string>`);
+  if (lib.length) lines.push(`  <lib>\n    <dict>\n${lib.join("\n")}\n    </dict>\n  </lib>`);
   lines.push("</glyph>");
   return lines.join("\n");
 }
@@ -165,7 +179,24 @@ export function parseGlif(xmlText: string, fallbackName?: string): ParsedGlif {
   doc.querySelectorAll("anchor").forEach((aEl) => {
     anchors.push({ name: aEl.getAttribute("name") || "top", x: Number(aEl.getAttribute("x")) || 0, y: Number(aEl.getAttribute("y")) || 0 });
   });
-  return { name, unicode, width, paths, anchors };
+  const note = doc.querySelector("note")?.textContent || undefined;
+  // Lib values are read with targeted regexes over the serialized lib dict
+  // to keep this parser free of plist plumbing.
+  const libMatch = xmlText.match(/<lib>[\s\S]*?<\/lib>/)?.[0] ?? "";
+  const libString = (key: string): string | undefined =>
+    libMatch.match(new RegExp(`<key>${key.replace(/\./g, "\\.")}</key>\\s*<string>([^<]*)</string>`))?.[1];
+  const tagsBlock = libMatch.match(/<key>com\.glyphswindows\.tags<\/key>\s*<array>([\s\S]*?)<\/array>/)?.[1];
+  const tags = tagsBlock ? [...tagsBlock.matchAll(/<string>([^<]*)<\/string>/g)].map((m) => m[1]) : undefined;
+  const colorRaw = libMatch.match(/<key>com\.glyphswindows\.colorLabel<\/key>\s*<integer>(-?\d+)<\/integer>/)?.[1];
+  const caseRaw = libString("com.glyphswindows.case");
+  return {
+    name, unicode, width, paths, anchors, note,
+    productionName: libString("com.glyphswindows.productionName"),
+    tags,
+    colorLabel: colorRaw != null ? Number(colorRaw) : undefined,
+    glyphCase: caseRaw === "upper" || caseRaw === "lower" ? caseRaw : "",
+    scriptOverride: libString("com.glyphswindows.script") || "",
+  };
 }
 
 function plistDict(entries: Array<[string, string | number]>): string {
@@ -275,6 +306,9 @@ export function ufoMapToFont(map: Map<string, Uint8Array>, fileName?: string): F
         name: parsed.name, unicode: parsed.unicode, width: parsed.width, lsb: 40, rsb: 40,
         category: "Letter", kerningGroupLeft: "", kerningGroupRight: "",
         metricsKeyLeft: "", metricsKeyRight: "", components: [],
+        productionName: parsed.productionName || "", tags: parsed.tags || [],
+        colorLabel: parsed.colorLabel, note: parsed.note || "",
+        glyphCase: parsed.glyphCase || "", scriptOverride: parsed.scriptOverride || "",
         anchors: parsed.anchors, layers: { masterRegular: { paths: parsed.paths } },
       });
     } catch { /* skip unreadable glyph, keep importing the rest */ }

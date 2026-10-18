@@ -104,6 +104,21 @@ kbd { font-family: var(--font-mono); font-size: 11px; color: var(--muted); float
 .fv-nav-letter { color: var(--accent); font-weight: 700; width: 15px; text-align: center; flex: none; }
 .fv-nav-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fv-nav-count { color: var(--muted); font-size: 11px; font-family: var(--font-mono); }
+.fv-controls {
+  display: none; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  font-size: 12px; color: var(--muted);
+}
+#app.workspace-font .fv-controls { display: flex; }
+.fv-controls select { max-width: 180px; }
+.fv-color-dot {
+  position: absolute; top: 6px; right: 6px; width: 10px; height: 10px;
+  border-radius: 50%; border: 1px solid rgba(30,30,40,.25);
+}
+.field textarea {
+  width: 100%; height: 52px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel);
+  padding: 5px 7px; resize: vertical;
+}
+.field select { width: 100%; }
 #glyphDetails { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
 .fv-detail-glyph { font-size: 42px; line-height: 1.1; text-align: center; color: var(--text); }
 .fv-detail-name { font-size: 13px; font-weight: 600; text-align: center; color: var(--muted); margin-bottom: 6px; }

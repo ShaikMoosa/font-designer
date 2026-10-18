@@ -6,7 +6,10 @@ import {
   compositeRecipe, interpolateGlyphAt, mastersCompatible, contoursToPathD,
   deleteBackup, restoreBackup, snapshotLayer,
   GLYPH_CATEGORIES, categoryForGlyph, scriptForGlyph, thumbCanvasSize, fontViewCountText,
+  renameGlyph, moveGlyphInOrder, applyGlyphInfo, glyphMatchesFilter, sortGlyphsForDisplay, GLYPH_FILTERS, parseTags,
 } from "./model.ts";
+import type { GlyphFilter, GlyphSortMode } from "./model.ts";
+import { glyphInfoFor, glyphSuggestionFor, productionNameFor, COLOR_LABELS } from "./glyphinfo.ts";
 import type { AlignMode, Font, Glyph, GlyphLayer } from "./model.ts";
 import { fontToGlyphsJson, glyphsJsonToFont, fontToOpenStep, downloadText, downloadBytes } from "./glyphs-io.ts";
 import { fontToUfoZip, fontToDesignspaceBundle, unzipToMap, ufoMapToFont } from "./ufo.ts";
@@ -32,6 +35,7 @@ interface AppState {
   splitView: boolean; paneBMasterId: string;
   workspace: "edit" | "font";
   fontCategory: string; fontLanguage: string; cellSize: number;
+  glyphFilter: GlyphFilter; glyphSort: GlyphSortMode;
 }
 
 const state: AppState = {
@@ -43,6 +47,7 @@ const state: AppState = {
   splitView: false, paneBMasterId: "",
   workspace: "edit",
   fontCategory: "All", fontLanguage: "All", cellSize: 112,
+  glyphFilter: "all", glyphSort: "order",
 };
 
 function setWorkspace(mode: "edit" | "font"): void {
@@ -206,17 +211,23 @@ function renderGlyphDetails(): void {
       <span>Kerning groups</span><strong>L ${escHtml(g.kerningGroupLeft || "—")} · R ${escHtml(g.kerningGroupRight || "—")}</strong>
       <span>Components</span><strong>${(g.components || []).length}</strong>
       <span>Backups</span><strong>${(g.backups || []).length}</strong>
+      <span>Production</span><strong>${escHtml(productionNameFor(g.name, g.unicode, g.productionName || ""))}</strong>
+      <span>Case</span><strong>${escHtml(g.glyphCase || "auto")}</strong>
+      <span>Color</span><strong>${g.colorLabel != null && COLOR_LABELS[g.colorLabel] ? escHtml(COLOR_LABELS[g.colorLabel].name) : "—"}</strong>
+      <span>Tags</span><strong>${escHtml((g.tags || []).join(", ") || "—")}</strong>
     </div>
     <p class="hint">${layerInfo}</p>
-    <p class="hint">Double-click a glyph to edit it. Tags, color labels, and production names arrive with the Phase 10 glyph-data work.</p>`;
+    <p class="hint">Double-click a glyph to edit it. Production name, tags, color label, case, and note are edited in the Inspector.</p>`;
 }
 
 function filteredGlyphs(): Glyph[] {
   const q = ($<HTMLInputElement>("#glyphSearch").value || "").trim().toLowerCase();
-  return state.font.glyphs.filter((g) =>
+  const filtered = state.font.glyphs.filter((g) =>
     (!q || g.name.toLowerCase().includes(q))
     && (state.fontCategory === "All" || categoryForGlyph(g) === state.fontCategory)
-    && (state.fontLanguage === "All" || scriptForGlyph(g) === state.fontLanguage));
+    && (state.fontLanguage === "All" || scriptForGlyph(g) === state.fontLanguage)
+    && glyphMatchesFilter(state.font, g, state.glyphFilter));
+  return sortGlyphsForDisplay(filtered, state.glyphSort);
 }
 
 function renderFontView() {
@@ -274,6 +285,13 @@ function renderFontView() {
       cell.title = `${g.name} — double-click to edit`;
       const canvas = document.createElement("canvas");
       cell.appendChild(canvas);
+      if (g.colorLabel != null && COLOR_LABELS[g.colorLabel]) {
+        const dot = document.createElement("span");
+        dot.className = "fv-color-dot";
+        dot.style.background = COLOR_LABELS[g.colorLabel].hex;
+        dot.title = `Color label: ${COLOR_LABELS[g.colorLabel].name}`;
+        cell.appendChild(dot);
+      }
       const nm = document.createElement("div"); nm.className = "gname"; nm.textContent = g.name; cell.appendChild(nm);
       const un = document.createElement("div"); un.className = "guni";
       un.textContent = g.unicode != null ? `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")}` : "—";
@@ -442,6 +460,24 @@ function renderInspector(g: Glyph): void {
       <div class="field"><label>Unicode (hex)</label><input id="inspUni" type="text" value="${uni}" placeholder="0041" /></div>
       <div class="field"><label>Category</label><input id="inspCat" type="text" value="${escHtml(g.category || "")}" /></div>
     </div>
+    <div id="inspSuggestion"></div>
+    <div class="field-row">
+      <div class="field"><label>Production name</label><input id="inspProd" type="text" value="${escHtml(g.productionName || "")}" placeholder="${escHtml(productionNameFor(g.name, g.unicode, ""))}" /></div>
+      <div class="field"><label>Script (override)</label><input id="inspScript" type="text" value="${escHtml(g.scriptOverride || "")}" placeholder="${escHtml(scriptForGlyph({ ...g, scriptOverride: "" }))}" /></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Case</label><select id="inspCase">
+        <option value=""${!g.glyphCase ? " selected" : ""}>Auto</option>
+        <option value="upper"${g.glyphCase === "upper" ? " selected" : ""}>Uppercase</option>
+        <option value="lower"${g.glyphCase === "lower" ? " selected" : ""}>Lowercase</option>
+      </select></div>
+      <div class="field"><label>Color label</label><select id="inspColor">
+        <option value="-1"${g.colorLabel == null || g.colorLabel < 0 ? " selected" : ""}>None</option>
+        ${COLOR_LABELS.map((c, i) => `<option value="${i}"${g.colorLabel === i ? " selected" : ""}>${c.name}</option>`).join("")}
+      </select></div>
+    </div>
+    <div class="field"><label>Tags (comma-separated)</label><input id="inspTags" type="text" value="${escHtml((g.tags || []).join(", "))}" placeholder="latin, core" /></div>
+    <div class="field"><label>Note</label><textarea id="inspNote" rows="2">${escHtml(g.note || "")}</textarea></div>
     <div class="field-row-3">
       <div class="field"><label>Width</label><input id="inspWidth" type="number" value="${g.width}" /></div>
       <div class="field"><label>LSB (shifts outline)</label><input id="inspLsb" type="number" value="${g.lsb}" /></div>
@@ -470,18 +506,37 @@ function renderInspector(g: Glyph): void {
     </div>
     <p class="hint">Handbook ref: Edit View (p13), Glyph Properties (p65), Anchors (p29). Full smart components, recipes and HOI are deferred in this MVP.</p>`;
   bindChange(page.querySelector("#inspName"), (el) => {
-    const next = el.value.trim(); if (!next || findGlyph(state.font, next)) { setStatus("Name empty or already used — rename reverted."); state.font = state.undoStack.pop() || state.font; return; }
     const old = g.name;
-    g.name = next;
+    const next = el.value.trim();
+    if (!renameGlyph(state.font, old, next)) {
+      setStatus("Name empty, unchanged, or already used — rename reverted.");
+      state.font = state.undoStack.pop() || state.font;
+      return;
+    }
     state.openTabs = state.openTabs.map((n) => (n === old ? next : n));
     state.currentGlyphName = next;
-    const kern: Record<string, number> = {};
-    for (const [k, v] of Object.entries(state.font.kerning)) {
-      const [l, r] = k.split("|");
-      kern[`${l === old ? next : l}|${r === old ? next : r}`] = v;
-    }
-    state.font.kerning = kern;
+    setStatus(`Renamed ${old} to ${next} — components, metrics keys, and kerning pairs updated.`);
   });
+  const suggestion = glyphSuggestionFor(g.name);
+  const suggEl = qs<HTMLElement>(page, "#inspSuggestion");
+  if (suggestion && (g.unicode !== suggestion.unicode || categoryForGlyph(g) !== suggestion.category)) {
+    suggEl.innerHTML = `<p class="hint">Glyph info suggests U+${suggestion.unicode.toString(16).toUpperCase().padStart(4, "0")} · ${escHtml(suggestion.category)}${suggestion.production ? ` · ${escHtml(suggestion.production)}` : ""}. <button id="applySuggestionBtn" type="button">Apply</button></p>`;
+    qs<HTMLButtonElement>(suggEl, "#applySuggestionBtn").addEventListener("click", () => {
+      pushUndo();
+      g.unicode = suggestion.unicode;
+      g.category = suggestion.category;
+      if (suggestion.production && !g.productionName) g.productionName = suggestion.production;
+      if (suggestion.glyphCase && !g.glyphCase) g.glyphCase = suggestion.glyphCase;
+      editor.refresh(state.font, currentGlyph()); renderAll();
+      setStatus(`Glyph info applied to ${g.name}.`);
+    });
+  }
+  bindChange(page.querySelector("#inspProd"), (el) => { g.productionName = el.value.trim(); });
+  bindChange(page.querySelector("#inspScript"), (el) => { g.scriptOverride = el.value.trim(); });
+  bindChange(page.querySelector("#inspCase"), (el) => { g.glyphCase = (el.value === "upper" || el.value === "lower" ? el.value : "") as Glyph["glyphCase"]; });
+  bindChange(page.querySelector("#inspColor"), (el) => { const v = Number(el.value); g.colorLabel = v >= 0 ? v : undefined; });
+  bindChange(page.querySelector("#inspTags"), (el) => { g.tags = parseTags(el.value); });
+  bindChange(page.querySelector("#inspNote"), (el) => { g.note = el.value; });
   bindChange(page.querySelector("#inspUni"), (el) => {
     const v = el.value.trim();
     g.unicode = v ? parseInt(v, 16) : null;
@@ -1001,10 +1056,12 @@ function addGlyphFlow(): void {
   const trimmed = name.trim();
   if (findGlyph(state.font, trimmed)) { setStatus(`Glyph ${trimmed} already exists.`); return; }
   pushUndo();
+  const suggestion = glyphSuggestionFor(trimmed);
   const glyph: Glyph = {
     name: trimmed,
-    unicode: [...trimmed].length === 1 ? (trimmed.codePointAt(0) ?? null) : null,
-    width: 600, lsb: 40, rsb: 40, category: "Letter",
+    unicode: suggestion?.unicode ?? null,
+    width: 600, lsb: 40, rsb: 40, category: suggestion?.category || "Letter",
+    productionName: suggestion?.production || "", glyphCase: suggestion?.glyphCase || "",
     kerningGroupLeft: "", kerningGroupRight: "", anchors: [], components: [],
     metricsKeyLeft: "", metricsKeyRight: "", layers: {},
   };
@@ -1258,6 +1315,47 @@ document.querySelectorAll<HTMLButtonElement>("[data-side]").forEach((b) => b.add
 }));
 $("#gridModeBtn").addEventListener("click", () => { state.fontViewMode = "grid"; renderFontView(); });
 $("#listModeBtn").addEventListener("click", () => { state.fontViewMode = "list"; renderFontView(); });
+{
+  const filterSel = $<HTMLSelectElement>("#fvFilter");
+  for (const f of GLYPH_FILTERS) {
+    const opt = document.createElement("option");
+    opt.value = f.id; opt.textContent = f.label;
+    filterSel.appendChild(opt);
+  }
+  filterSel.addEventListener("change", () => { state.glyphFilter = filterSel.value as GlyphFilter; renderFontView(); });
+  const sortSel = $<HTMLSelectElement>("#fvSort");
+  sortSel.addEventListener("change", () => { state.glyphSort = sortSel.value as GlyphSortMode; renderFontView(); });
+}
+$("#applyInfoBtn").addEventListener("click", () => {
+  pushUndo();
+  const changed = applyGlyphInfo(state.font);
+  renderAll();
+  setStatus(changed ? `Glyph info applied to ${changed} glyph(s) — Unicode, category, production name, and case filled from the database.` : "Glyph info is already complete for every known glyph name.");
+});
+$("#moveGlyphPrevBtn").addEventListener("click", () => {
+  pushUndo();
+  if (!moveGlyphInOrder(state.font, state.currentGlyphName, -1)) { state.undoStack.pop(); setStatus(`${state.currentGlyphName} is already first in the glyph order.`); return; }
+  renderAll();
+  setStatus(`${state.currentGlyphName} moved earlier in the glyph order.`);
+});
+$("#moveGlyphNextBtn").addEventListener("click", () => {
+  pushUndo();
+  if (!moveGlyphInOrder(state.font, state.currentGlyphName, 1)) { state.undoStack.pop(); setStatus(`${state.currentGlyphName} is already last in the glyph order.`); return; }
+  renderAll();
+  setStatus(`${state.currentGlyphName} moved later in the glyph order.`);
+});
+$("#batchCategoryBtn").addEventListener("click", () => {
+  const shown = filteredGlyphs();
+  if (!shown.length) { setStatus("No glyphs are currently shown — nothing to update."); return; }
+  const value = prompt(`Category for the ${shown.length} shown glyph(s). One of: ${GLYPH_CATEGORIES.join(", ")}`, shown[0].category || "Letter");
+  if (value == null) return;
+  const category = GLYPH_CATEGORIES.find((c) => c.toLowerCase() === value.trim().toLowerCase());
+  if (!category) { setStatus(`Unknown category "${value.trim()}" — use one of: ${GLYPH_CATEGORIES.join(", ")}.`); return; }
+  pushUndo();
+  for (const g of shown) g.category = category;
+  renderAll();
+  setStatus(`Category ${category} applied to ${shown.length} shown glyph(s).`);
+});
 $("#wsFontBtn").addEventListener("click", () => setWorkspace("font"));
 $("#wsEditBtn").addEventListener("click", () => setWorkspace("edit"));
 $<HTMLInputElement>("#cellSize").addEventListener("input", (ev) => {
