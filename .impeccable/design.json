@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-18T14:05:00+05:30",
+  "title": "Design System: Glyphs for Windows",
+  "extensions": {
+    "colorMeta": {
+      "precision-blue": { "role": "primary", "displayName": "Precision Blue", "canonical": "#0a64d8", "tonalRamp": ["#041a38", "#073b7e", "#0a64d8", "#4b91e7", "#8bbaf0", "#bfd8f7", "#dceafb", "#f1f7fe"] },
+      "drawing-white": { "role": "neutral", "displayName": "Drawing White", "canonical": "#ffffff", "tonalRamp": ["#202024", "#4a4a50", "#727279", "#9a9aa0", "#c1c1c5", "#dedee1", "#f2f2f3", "#ffffff"] },
+      "guide-orange": { "role": "tertiary", "displayName": "Guide Orange", "canonical": "#e69a32", "tonalRamp": ["#352007", "#70440d", "#ac6918", "#e69a32", "#efb765", "#f5d094", "#fae5c5", "#fdf5e9"] },
+      "active-ink": { "role": "primary", "displayName": "Deep Active Blue", "canonical": "#064f9f", "tonalRamp": ["#03162d", "#052d5b", "#064f9f", "#3278c2", "#72a5dc", "#accbeb", "#d8e8f8", "#f0f6fc"] },
+      "active-border": { "role": "primary", "displayName": "Active Border Blue", "canonical": "#9fc2ee", "tonalRamp": ["#14283f", "#294f7a", "#477aaf", "#72a1d5", "#9fc2ee", "#bfd8f5", "#dce9fa", "#f3f8fd"] },
+      "selection-border": { "role": "primary", "displayName": "Selection Edge Blue", "canonical": "#98bee9", "tonalRamp": ["#13263c", "#274b73", "#4475a7", "#6d9bce", "#98bee9", "#bad4f2", "#d9e8f8", "#f1f7fc"] },
+      "deep-neutral": { "role": "neutral", "displayName": "Deep Chrome Neutral", "canonical": "#303034", "tonalRamp": ["#18181b", "#303034", "#505056", "#74747b", "#9b9ba1", "#c1c1c5", "#e2e2e4", "#f7f7f8"] }
+    },
+    "typographyMeta": {
+      "title": { "displayName": "Workspace Title", "purpose": "Document, panel, and current-glyph titles." },
+      "body": { "displayName": "Interface Body", "purpose": "Compact controls and editing values." },
+      "label": { "displayName": "Field Label", "purpose": "Secondary metadata and field names." },
+      "mono": { "displayName": "Technical Readout", "purpose": "Coordinates, Unicode, measurements, and feature code." },
+      "view-title": { "displayName": "View Title", "purpose": "Expanded Font View headings." },
+      "glyph-preview": { "displayName": "Glyph Preview", "purpose": "Selected glyph sample in navigation details." }
+    },
+    "shadows": [
+      { "name": "popover", "value": "0 10px 28px rgba(24, 24, 28, 0.18)", "purpose": "Temporary menus and tool popovers only." }
+    ],
+    "motion": [],
+    "breakpoints": [
+      { "name": "compact-desktop", "value": "1180px" },
+      { "name": "laptop", "value": "980px" },
+      { "name": "narrow", "value": "820px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Active Tool Button",
+      "kind": "button",
+      "refersTo": "button-active",
+      "description": "Selected drawing tool or visible panel state.",
+      "html": "<button class=\"ds-tool-active\" aria-pressed=\"true\"><svg viewBox=\"0 0 20 20\" aria-hidden=\"true\"><path d=\"M5 3.5 15 10l-5.3 1.2L7 16.5Z\"/></svg></button>",
+      "css": ".ds-tool-active{display:grid;place-items:center;width:28px;height:28px;border:1px solid #9fc2ee;border-radius:4px;background:#dceafb;color:#064f9f}.ds-tool-active svg{width:18px;fill:none;stroke:currentColor;stroke-width:1.55}.ds-tool-active:hover{background:#c7ddf8}.ds-tool-active:focus-visible{outline:2px solid #0a64d8;outline-offset:1px}"
+    },
+    {
+      "name": "Compact Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Default inspector and document field.",
+      "html": "<input class=\"ds-input\" value=\"A\" aria-label=\"Glyph name\">",
+      "css": ".ds-input{height:27px;padding:3px 7px;border:1px solid #cfcfd3;border-radius:4px;background:#fff;color:#202024;font:12px 'Segoe UI',sans-serif}.ds-input:hover{border-color:#b8b8be}.ds-input:focus-visible{outline:2px solid #0a64d8;outline-offset:1px}"
+    },
+    {
+      "name": "Document Tab",
+      "kind": "nav",
+      "description": "Active Font View or glyph tab.",
+      "html": "<button class=\"ds-tab\" role=\"tab\" aria-selected=\"true\">A</button>",
+      "css": ".ds-tab{position:relative;width:86px;height:28px;border:1px solid #cfcfd3;border-bottom:0;border-radius:5px 5px 0 0;background:#fff;color:#202024;font:600 12px 'Segoe UI',sans-serif}.ds-tab:before{content:'';position:absolute;top:-1px;left:6px;right:6px;height:2px;background:#0a64d8}.ds-tab:hover{background:#f8f8f9}.ds-tab:focus-visible{outline:2px solid #0a64d8;outline-offset:1px}"
+    },
+    {
+      "name": "Selected Glyph Cell",
+      "kind": "custom",
+      "description": "Font View selection with glyph-first hierarchy.",
+      "html": "<div class=\"ds-glyph-cell\"><span class=\"ds-glyph\">A</span><strong>A</strong><small>U+0041</small></div>",
+      "css": ".ds-glyph-cell{display:grid;place-items:center;width:82px;padding:8px 5px;border:1px solid #98bee9;border-radius:4px;background:#c7ddf8;color:#202024;font:11px 'Segoe UI',sans-serif}.ds-glyph{font-size:30px;line-height:1.1}.ds-glyph-cell strong{font-weight:600}.ds-glyph-cell small{color:#686870;font:11px 'Cascadia Mono',monospace}"
+    },
+    {
+      "name": "Glyph Info Strip",
+      "kind": "custom",
+      "description": "Metrics attached directly below the drawing canvas.",
+      "html": "<div class=\"ds-info\"><strong>A</strong><span>U+0041</span><span>LSB <b>10</b></span><span>Width <b>680</b></span><span>RSB <b>10</b></span></div>",
+      "css": ".ds-info{display:flex;align-items:center;gap:14px;height:33px;padding:4px 10px;border-top:1px solid #cfcfd3;background:#f2f2f3;color:#686870;font:12px 'Segoe UI',sans-serif}.ds-info strong,.ds-info b{color:#202024}.ds-info span:first-of-type{font:11px 'Cascadia Mono',monospace}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Precision Workspace",
+    "overview": "A professional drawing instrument: quiet at rest, exact in response, and dense enough for long type-design sessions. It uses Glyphs-like information architecture with an original Windows presentation.",
+    "keyCharacteristics": ["Canvas-first composition", "Compact native-feeling controls", "One disciplined blue interaction accent", "Original line icons and tabular numeric readouts"],
+    "rules": [
+      { "name": "The One Accent Rule", "body": "Blue communicates interaction state and should not become decorative surface color.", "section": "colors" },
+      { "name": "The Flat Canvas Rule", "body": "Permanent panes never use drop shadows; the white drawing surface remains visually uninterrupted.", "section": "elevation" }
+    ],
+    "dos": ["Do let the canvas remain the largest uninterrupted surface.", "Do pair icon-only controls with tooltips, accessible names, and keyboard shortcuts."],
+    "donts": ["Don't copy proprietary branding or macOS window chrome.", "Don't use marketing gradients or decorative card layouts in the editor."]
+  }
+}

@@ -56,7 +56,9 @@ function setWorkspace(mode: "edit" | "font"): void {
   $("#app").classList.toggle("workspace-font", mode === "font");
   $("#wsFontBtn").classList.toggle("is-on", mode === "font");
   $("#wsEditBtn").classList.toggle("is-on", mode === "edit");
+  renderTabs();
   if (mode === "font") renderFontView();
+  else requestAnimationFrame(() => activeEd.refresh(state.font, currentGlyph()));
 }
 
 function currentGlyph(): Glyph { return findGlyph(state.font, state.currentGlyphName) || state.font.glyphs[0]; }
@@ -316,14 +318,18 @@ function renderTabs() {
   const tabs = $("#tabs");
   tabs.innerHTML = "";
   const fv = document.createElement("button");
-  fv.className = "tab"; fv.type = "button"; fv.textContent = "Font View";
+  fv.className = `tab${state.workspace === "font" ? " is-on" : ""}`; fv.type = "button"; fv.textContent = "Font View";
+  fv.setAttribute("role", "tab");
+  fv.setAttribute("aria-selected", String(state.workspace === "font"));
   fv.addEventListener("click", () => { setWorkspace("font"); $<HTMLInputElement>("#glyphSearch").focus(); });
   tabs.appendChild(fv);
   for (const name of state.openTabs) {
     const b = document.createElement("button");
-    b.className = `tab${name === state.currentGlyphName ? " is-on" : ""}`;
+    const active = state.workspace === "edit" && name === state.currentGlyphName;
+    b.className = `tab${active ? " is-on" : ""}`;
     b.type = "button"; b.textContent = name; b.setAttribute("role", "tab");
-    b.addEventListener("click", () => openGlyph(name, false));
+    b.setAttribute("aria-selected", String(active));
+    b.addEventListener("click", () => { setWorkspace("edit"); openGlyph(name, false); });
     tabs.appendChild(b);
   }
 }
@@ -354,6 +360,14 @@ function renderHeader() {
   const svgB = $<SVGSVGElement>("#editorSvgB");
   if (state.splitView) svgB.removeAttribute("hidden"); else svgB.setAttribute("hidden", "");
   const g = currentGlyph();
+  const master = state.font.masters.find((m) => m.id === state.font.currentMasterId);
+  $("#infoGlyph").textContent = g?.name || "—";
+  $("#infoUnicode").textContent = g?.unicode == null ? "No Unicode" : `U+${g.unicode.toString(16).toUpperCase().padStart(4, "0")}`;
+  $("#infoLSB").textContent = String(g?.lsb ?? "—");
+  $("#infoWidth").textContent = String(g?.width ?? "—");
+  $("#infoRSB").textContent = String(g?.rsb ?? "—");
+  $("#infoMaster").textContent = master?.name || "";
+  $("#sideContext").textContent = g ? `${g.name} · ${master?.name || ""}` : "No selection";
   $("#statusRight").textContent = g
     ? `${state.font.familyName} · ${g.name} · width ${g.width} · LSB ${g.lsb} RSB ${g.rsb} · ${state.font.glyphs.length} glyphs`
     : state.font.familyName;
@@ -1142,7 +1156,11 @@ function renderSide(): void {
 function setTool(tool: Tool): void {
   editor.setTool(tool);
   editorB.setTool(tool);
-  document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((b) => b.classList.toggle("is-on", b.dataset.tool === tool));
+  document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((b) => {
+    const active = b.dataset.tool === tool;
+    b.classList.toggle("is-on", active);
+    b.setAttribute("aria-pressed", String(active));
+  });
   setStatus(tool === "pen" ? "Pen: click to place nodes, drag to pull handles, click the first node to close."
     : tool === "pencil" ? "Pencil: drag a freehand stroke — it becomes an editable open contour on release."
     : tool === "measure" ? "Measure: click two points (snaps to nodes); the readout shows distance and angle. Nothing is modified."
@@ -1459,6 +1477,16 @@ function dispatch(cmd: string): void {
   }
 }
 
+function toggleChromePanel(className: "left-collapsed" | "right-collapsed" | "preview-collapsed", button: HTMLButtonElement): void {
+  const collapsed = $("#app").classList.toggle(className);
+  button.classList.toggle("is-on", !collapsed);
+  button.setAttribute("aria-pressed", String(!collapsed));
+  requestAnimationFrame(() => {
+    editor.refresh(state.font, currentGlyph());
+    refreshPaneB(false);
+  });
+}
+
 document.querySelectorAll<HTMLButtonElement>("[data-cmd]").forEach((b) => b.addEventListener("click", () => { const cmd = b.dataset.cmd; if (cmd) dispatch(cmd); }));
 document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((b) => b.addEventListener("click", () => setTool((b.dataset.tool || "select") as Tool)));
 document.querySelectorAll<HTMLButtonElement>("[data-side]").forEach((b) => b.addEventListener("click", () => {
@@ -1510,6 +1538,13 @@ $("#batchCategoryBtn").addEventListener("click", () => {
 });
 $("#wsFontBtn").addEventListener("click", () => setWorkspace("font"));
 $("#wsEditBtn").addEventListener("click", () => setWorkspace("edit"));
+$("#toggleLeftBtn").addEventListener("click", (ev) => toggleChromePanel("left-collapsed", ev.currentTarget as HTMLButtonElement));
+$("#toggleRightBtn").addEventListener("click", (ev) => toggleChromePanel("right-collapsed", ev.currentTarget as HTMLButtonElement));
+$("#togglePreviewBtn").addEventListener("click", (ev) => toggleChromePanel("preview-collapsed", ev.currentTarget as HTMLButtonElement));
+$("#collapsePreviewBtn").addEventListener("click", () => {
+  const button = $<HTMLButtonElement>("#togglePreviewBtn");
+  toggleChromePanel("preview-collapsed", button);
+});
 $<HTMLInputElement>("#cellSize").addEventListener("input", (ev) => {
   state.cellSize = +(ev.target as HTMLInputElement).value || 88;
   renderFontView();
@@ -1621,6 +1656,7 @@ document.addEventListener("keydown", (ev) => {
 });
 
 // Boot. In the Electron shell the native menu drives the same commands.
+$("#app").classList.toggle("is-desktop", isDesktop());
 onDesktopMenuCommand((command) => dispatch(command));
 editor.setGlyph(state.font, currentGlyph());
 renderAll();

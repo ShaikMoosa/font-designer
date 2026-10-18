@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          "index.html"
+        ],
+        "createdAt": "2026-10-18T08:17:44.808Z",
+        "reason": "Codex reviewed the rendered UI at 1440x900 and 1280x720: this finding targets the intentional full-bleed SVG canvas/pane boundary, not a text-bearing control."
+      }
+    ]
+  }
+}

@@ -3,181 +3,86 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Glyphs for Windows — MVP</title>
+    <title>Glyphs for Windows</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div id="app">
       <header id="menubar">
-        <div class="brand"><span class="brand-mark">G</span><span>Glyphs <em>for Windows</em></span><span class="badge">MVP</span></div>
+        <div class="browser-brand" aria-label="Glyphs for Windows"><span class="brand-mark" aria-hidden="true">G</span><span>Glyphs for Windows</span></div>
         <nav class="menus" aria-label="Application menus">
-          <div class="menu">
-            <button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">File</button>
-            <div class="menu-drop">
-              <button data-cmd="new" type="button">New Font <kbd>Ctrl+N</kbd></button>
-              <button data-cmd="open" type="button">Open… <kbd>Ctrl+O</kbd></button>
-              <button data-cmd="save-glyphs" type="button">Save as .glyphs (OpenStep) <kbd>Ctrl+S</kbd></button>
-              <button data-cmd="save-glyphs-json" type="button">Save as .glyphs JSON (subset)</button>
-              <button data-cmd="export-ufo" type="button">Export UFO (.zip) <kbd>Ctrl+E</kbd></button>
-              <button data-cmd="export-font" type="button">Export Font… (OTF/TTF/WOFF/variable)</button>
-            </div>
-          </div>
-          <div class="menu">
-            <button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">Edit</button>
-            <div class="menu-drop">
-              <button data-cmd="undo" type="button">Undo <kbd>Ctrl+Z</kbd></button>
-              <button data-cmd="redo" type="button">Redo <kbd>Ctrl+Y</kbd></button>
-              <button data-cmd="delete-sel" type="button">Delete Selection <kbd>Del</kbd></button>
-              <button data-cmd="close-path" type="button">Close Path</button>
-              <button data-cmd="cut-path" type="button">Cut Path at Selected Node</button>
-              <button data-cmd="convert" type="button">Convert Node Line/Curve</button>
-            </div>
-          </div>
-          <div class="menu">
-            <button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">View</button>
-            <div class="menu-drop">
-              <button data-cmd="zoom-in" type="button">Zoom In <kbd>Ctrl++</kbd></button>
-              <button data-cmd="zoom-out" type="button">Zoom Out <kbd>Ctrl+-</kbd></button>
-              <button data-cmd="zoom-fit" type="button">Zoom to Fit <kbd>Ctrl+0</kbd></button>
-              <button data-cmd="toggle-guides" type="button">Toggle Guides</button>
-              <button data-cmd="toggle-nodes" type="button">Toggle Nodes</button>
-            </div>
-          </div>
-          <div class="menu">
-            <button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">Glyph</button>
-            <div class="menu-drop">
-              <button data-cmd="add-glyph" type="button">Add Glyph…</button>
-              <button data-cmd="create-composite" type="button">Create Composite (recipe)</button>
-              <button data-cmd="add-rect" type="button">Add Rectangle</button>
-              <button data-cmd="add-ellipse" type="button">Add Ellipse</button>
-            </div>
-          </div>
+          <div class="menu"><button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">File</button><div class="menu-drop">
+            <button data-cmd="new" type="button">New Font <kbd>Ctrl+N</kbd></button><button data-cmd="open" type="button">Open… <kbd>Ctrl+O</kbd></button><button data-cmd="save-glyphs" type="button">Save as .glyphs <kbd>Ctrl+S</kbd></button><button data-cmd="save-glyphs-json" type="button">Save JSON subset</button><div class="menu-rule"></div><button data-cmd="export-ufo" type="button">Export UFO (.zip) <kbd>Ctrl+E</kbd></button><button data-cmd="export-font" type="button">Export Font…</button>
+          </div></div>
+          <div class="menu"><button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">Edit</button><div class="menu-drop">
+            <button data-cmd="undo" type="button">Undo <kbd>Ctrl+Z</kbd></button><button data-cmd="redo" type="button">Redo <kbd>Ctrl+Y</kbd></button><div class="menu-rule"></div><button data-cmd="delete-sel" type="button">Delete Selection <kbd>Del</kbd></button><button data-cmd="close-path" type="button">Close Path</button><button data-cmd="cut-path" type="button">Cut Path at Node</button><button data-cmd="convert" type="button">Convert Node</button>
+          </div></div>
+          <div class="menu"><button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">View</button><div class="menu-drop">
+            <button data-cmd="zoom-in" type="button">Zoom In <kbd>Ctrl++</kbd></button><button data-cmd="zoom-out" type="button">Zoom Out <kbd>Ctrl+-</kbd></button><button data-cmd="zoom-fit" type="button">Zoom to Fit <kbd>Ctrl+0</kbd></button><div class="menu-rule"></div><button data-cmd="toggle-guides" type="button">Toggle Guides</button><button data-cmd="toggle-nodes" type="button">Toggle Nodes</button>
+          </div></div>
+          <div class="menu"><button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">Glyph</button><div class="menu-drop">
+            <button data-cmd="add-glyph" type="button">Add Glyph…</button><button data-cmd="create-composite" type="button">Create Composite…</button><button data-cmd="add-rect" type="button">Add Rectangle</button><button data-cmd="add-ellipse" type="button">Add Ellipse</button>
+          </div></div>
         </nav>
-        <div class="seg workspace-switch" role="group" aria-label="Workspace">
-          <button id="wsFontBtn" class="seg-btn" type="button">Font View</button>
-          <button id="wsEditBtn" class="seg-btn is-on" type="button">Edit View</button>
-        </div>
+        <div class="document-identity"><span id="docName" class="doc-name">Untitled.glyphs</span><span class="edited-dot" title="Document workspace" aria-hidden="true"></span></div>
         <div class="head-actions">
-          <label class="master-pick">Master
-            <select id="masterSelect" aria-label="Active master"></select>
-          </label>
-          <span id="docName" class="doc-name">Untitled.glyphs</span>
+          <label class="master-pick"><span>Master</span><select id="masterSelect" aria-label="Active master"></select></label>
+          <div class="panel-toggles" role="group" aria-label="Panel visibility">
+            <button id="toggleLeftBtn" class="icon-btn is-on" type="button" title="Toggle glyph navigator" aria-label="Toggle glyph navigator" aria-pressed="true"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M5.5 3v10"/></svg></button>
+            <button id="togglePreviewBtn" class="icon-btn is-on" type="button" title="Toggle preview" aria-label="Toggle preview" aria-pressed="true"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2.5 10h11"/></svg></button>
+            <button id="toggleRightBtn" class="icon-btn is-on" type="button" title="Toggle inspector" aria-label="Toggle inspector" aria-pressed="true"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M10.5 3v10"/></svg></button>
+          </div>
         </div>
+        <button id="wsFontBtn" class="legacy-workspace-control" type="button" tabindex="-1" aria-hidden="true">Font View</button><button id="wsEditBtn" class="legacy-workspace-control" type="button" tabindex="-1" aria-hidden="true">Edit View</button>
         <input id="fileInput" type="file" accept=".glyphs,.json,.zip" hidden />
       </header>
+      <div id="tabs" class="tabs" role="tablist" aria-label="Document views and open glyphs"></div>
+
       <div id="workbench">
-        <aside id="fontview" aria-label="Font View">
-          <div class="fv-rail">
-            <div class="fv-nav-label">Categories</div>
-            <nav id="categoryNav" aria-label="Glyph categories"></nav>
-            <div class="fv-nav-label">Languages</div>
-            <nav id="languageNav" aria-label="Glyph languages"></nav>
-            <section id="glyphDetails" aria-label="Selected glyph details"></section>
-          </div>
+        <aside id="fontview" aria-label="Font View and glyph navigator">
+          <div class="fv-rail"><div class="fv-nav-label">Categories</div><nav id="categoryNav" aria-label="Glyph categories"></nav><div class="fv-nav-label">Languages</div><nav id="languageNav" aria-label="Glyph languages"></nav><section id="glyphDetails" aria-label="Selected glyph details"></section></div>
           <div class="fv-main">
-            <input id="glyphSearch" type="search" placeholder="Search glyphs (e.g. A, eacute)" aria-label="Search glyphs" />
-          <div class="fv-controls">
-            <label>Filter <select id="fvFilter" aria-label="Glyph filter"></select></label>
-            <label>Sort <select id="fvSort" aria-label="Glyph sort order">
-              <option value="order">Font order</option>
-              <option value="name">Name</option>
-              <option value="unicode">Unicode</option>
-            </select></label>
-            <button id="applyInfoBtn" type="button">Apply glyph info</button>
-            <button id="moveGlyphPrevBtn" type="button">← Move</button>
-            <button id="moveGlyphNextBtn" type="button">Move →</button>
-            <button id="batchCategoryBtn" type="button">Category for shown…</button>
-          </div>
-            <div class="panel-head">
-              <strong id="fontViewTitle">All glyphs</strong>
-              <div class="seg" role="group" aria-label="Font view mode">
-                <button id="gridModeBtn" class="seg-btn is-on" type="button">Grid</button>
-                <button id="listModeBtn" class="seg-btn" type="button">List</button>
-              </div>
+            <div class="glyph-search-wrap"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25"/><path d="m10.25 10.25 3 3"/></svg><input id="glyphSearch" type="search" placeholder="Search glyphs" aria-label="Search glyphs" /></div>
+            <div class="fv-controls">
+              <label>Filter <select id="fvFilter" aria-label="Glyph filter"></select></label><label>Sort <select id="fvSort" aria-label="Glyph sort order"><option value="order">Font order</option><option value="name">Name</option><option value="unicode">Unicode</option></select></label>
+              <button id="applyInfoBtn" type="button">Apply glyph info</button><button id="moveGlyphPrevBtn" type="button">Move earlier</button><button id="moveGlyphNextBtn" type="button">Move later</button><button id="batchCategoryBtn" type="button">Set category…</button>
             </div>
+            <div class="panel-head"><strong id="fontViewTitle">All glyphs</strong><div class="seg" role="group" aria-label="Font view mode"><button id="gridModeBtn" class="seg-btn is-on" type="button">Grid</button><button id="listModeBtn" class="seg-btn" type="button">List</button></div></div>
             <div id="glyphGrid" class="glyph-grid"></div>
-            <div class="panel-foot fv-status">
-              <button id="addGlyphBtn" type="button">+ Glyph</button>
-              <span id="glyphCount" class="muted"></span>
-              <label class="fv-size"><span aria-hidden="true">−</span><input id="cellSize" type="range" min="56" max="160" value="112" aria-label="Glyph cell size" /><span aria-hidden="true">+</span></label>
-            </div>
+            <div class="panel-foot fv-status"><button id="addGlyphBtn" class="primary-action" type="button">+ Glyph</button><span id="glyphCount" class="muted"></span><label class="fv-size" title="Glyph cell size"><span aria-hidden="true">−</span><input id="cellSize" type="range" min="56" max="160" value="112" aria-label="Glyph cell size" /><span aria-hidden="true">+</span></label></div>
           </div>
         </aside>
+
         <main id="editview" aria-label="Edit View">
-          <div id="toolbar" role="toolbar" aria-label="Edit tools">
-            <button data-tool="select" class="tool is-on" type="button" title="Select (V) — Shift-click adds nodes">Select</button>
-            <button data-tool="pen" class="tool" type="button" title="Pen — click to place nodes, drag for curves (P)">Pen</button>
-            <button data-tool="pencil" class="tool" type="button" title="Pencil — drag a freehand stroke (B)">Pencil</button>
-            <button data-tool="measure" class="tool" type="button" title="Measure — click two points, snaps to nodes (M)">Measure</button>
-            <button data-tool="hand" class="tool" type="button" title="Hand — drag to pan (H)">Hand</button>
-            <button data-tool="text" class="tool" type="button" title="Text — edit preview string (T)">Text</button>
-            <span class="tool-sep"></span>
-            <button id="rectBtn" type="button" title="Add rectangle primitive">Rect</button>
-            <button id="ellipseBtn" type="button" title="Add ellipse primitive">Ellipse</button>
-            <button id="closePathBtn" type="button">Close path</button>
-            <button id="cutPathBtn" type="button" title="Cut path at the selected node">Cut path</button>
-            <button id="convertBtn" type="button">Convert</button>
-            <button id="deleteBtn" type="button">Delete</button>
-            <span class="tool-sep"></span>
-            <span class="align-group" role="group" aria-label="Align selected nodes">
-              <button data-align="left" type="button" title="Align left edges">⇤</button>
-              <button data-align="hcenter" type="button" title="Align horizontal centers">↔</button>
-              <button data-align="right" type="button" title="Align right edges">⇥</button>
-              <button data-align="bottom" type="button" title="Align bottoms">⤓</button>
-              <button data-align="vcenter" type="button" title="Align vertical centers">↕</button>
-              <button data-align="top" type="button" title="Align tops">⤒</button>
-              <button data-align="distX" type="button" title="Distribute horizontally">⇹ X</button>
-              <button data-align="distY" type="button" title="Distribute vertically">⇹ Y</button>
-            </span>
-            <span class="tool-sep"></span>
-            <button id="undoBtn" type="button">Undo</button>
-            <button id="redoBtn" type="button">Redo</button>
-          </div>
-          <div id="tabs" class="tabs" role="tablist" aria-label="Open glyphs"></div>
-          <div id="paneBar">
-            <button id="splitBtn" type="button" title="Show two masters of this glyph side by side">Masters side-by-side</button>
-            <label id="paneBLabel" hidden>Pane B master
-              <select id="paneBMaster" aria-label="Second pane master"></select>
-            </label>
-            <button id="addMasterBtn" type="button" title="Create a new master by copying the current layers">+ Master (copy)</button>
-            <span id="measureReadout" class="measure-readout" aria-live="polite"></span>
-          </div>
-          <div id="canvasWrap">
-            <div id="panes">
-              <svg id="editorSvg" role="application" aria-label="Glyph outline editor" tabindex="0"></svg>
-              <svg id="editorSvgB" role="application" aria-label="Glyph outline editor, second master" tabindex="0" hidden></svg>
+          <div id="toolbar" role="toolbar" aria-label="Glyph editing tools">
+            <div class="tool-cluster" role="group" aria-label="Tools">
+              <button data-tool="select" class="tool icon-tool is-on" type="button" title="Select (V)" aria-label="Select tool" aria-pressed="true"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3.5 15 10l-5.3 1.2L7 16.5Z"/><path d="m10 11 3.7 4.2"/></svg></button>
+              <button data-tool="pen" class="tool icon-tool" type="button" title="Pen (P)" aria-label="Pen tool" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 16 2.5-7.5L12 3l5 5-5.5 5.5Z"/><circle cx="10.8" cy="9.2" r="1.3"/><path d="m12 3 5 5"/></svg></button>
+              <button data-tool="pencil" class="tool icon-tool" type="button" title="Pencil (B)" aria-label="Pencil tool" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 14.8.7-3.5L13.8 2.2l4 4-9.1 9.1-3.5.7Z"/><path d="m12.5 3.5 4 4M5 12l3 3"/></svg></button>
+              <button data-tool="measure" class="tool icon-tool" type="button" title="Measure (M)" aria-label="Measure tool" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m3.5 13.5 10-10 3 3-10 10Z"/><path d="m7 10 2 2m1-5 2 2m1-5 2 2"/></svg></button>
+              <button data-tool="hand" class="tool icon-tool" type="button" title="Hand (H)" aria-label="Hand tool" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.2 9V5.5a1.2 1.2 0 0 1 2.4 0V8m0 0V4.2a1.2 1.2 0 0 1 2.4 0V8m0 .3V5.2a1.2 1.2 0 0 1 2.4 0V9m0 .2V7.4a1.2 1.2 0 0 1 2.4 0v4.2c0 3.6-2.2 5.4-5.3 5.4-2.1 0-3.4-1-4.5-2.5L3.7 11a1.3 1.3 0 0 1 2.5-.8L7.5 12"/></svg></button>
+              <button data-tool="text" class="tool icon-tool" type="button" title="Text (T)" aria-label="Text tool" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h12M10 4v12M7 16h6"/></svg></button>
             </div>
-            <div id="coordReadout" class="coord">0, 0</div>
+            <span class="tool-sep" aria-hidden="true"></span>
+            <div class="tool-cluster" role="group" aria-label="Shapes"><button id="rectBtn" class="icon-tool" type="button" title="Add rectangle" aria-label="Add rectangle"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4" y="5" width="12" height="10" rx=".5"/></svg></button><button id="ellipseBtn" class="icon-tool" type="button" title="Add ellipse" aria-label="Add ellipse"><svg viewBox="0 0 20 20" aria-hidden="true"><ellipse cx="10" cy="10" rx="6" ry="5"/></svg></button></div>
+            <details class="tool-popover"><summary title="Path operations">Path <span aria-hidden="true">⌄</span></summary><div class="tool-menu"><button id="closePathBtn" type="button">Close path</button><button id="cutPathBtn" type="button">Cut at selected node</button><button id="convertBtn" type="button">Convert line / curve</button><button id="deleteBtn" class="danger-action" type="button">Delete selection</button></div></details>
+            <details class="tool-popover align-popover"><summary title="Alignment and distribution">Align <span aria-hidden="true">⌄</span></summary><div class="tool-menu align-group" role="group" aria-label="Align selected nodes"><button data-align="left" type="button">Left</button><button data-align="hcenter" type="button">Center X</button><button data-align="right" type="button">Right</button><button data-align="bottom" type="button">Bottom</button><button data-align="vcenter" type="button">Center Y</button><button data-align="top" type="button">Top</button><button data-align="distX" type="button">Distribute X</button><button data-align="distY" type="button">Distribute Y</button></div></details>
+            <span class="tool-sep" aria-hidden="true"></span>
+            <div class="tool-cluster" role="group" aria-label="History"><button id="undoBtn" class="icon-tool" type="button" title="Undo (Ctrl+Z)" aria-label="Undo"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 5-4 3.5L8 12"/><path d="M5 8.5h6.5a4.5 4.5 0 0 1 4.5 4.5v2"/></svg></button><button id="redoBtn" class="icon-tool" type="button" title="Redo (Ctrl+Y)" aria-label="Redo"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12 5 4 3.5-4 3.5"/><path d="M15 8.5H8.5A4.5 4.5 0 0 0 4 13v2"/></svg></button></div>
+            <div id="paneBar"><button id="splitBtn" type="button" title="Show masters side-by-side">Split masters</button><label id="paneBLabel" hidden>Second master <select id="paneBMaster" aria-label="Second pane master"></select></label><button id="addMasterBtn" type="button">+ Master</button><span id="measureReadout" class="measure-readout" aria-live="polite"></span></div>
           </div>
-          <div id="previewBar">
-            <label>Preview
-              <input id="previewText" type="text" value="HAVO eon 123" aria-label="Preview text" />
-            </label>
-            <label>Size <input id="previewSize" type="range" min="24" max="140" value="72" /></label>
-            <div id="previewSvgWrap"><svg id="previewSvg" aria-label="Text preview"></svg></div>
-          </div>
+          <div id="canvasWrap"><div id="panes"><svg id="editorSvg" role="application" aria-label="Glyph outline editor" tabindex="0"></svg><svg id="editorSvgB" role="application" aria-label="Glyph outline editor, second master" tabindex="0" hidden></svg></div><div id="coordReadout" class="coord">0, 0</div></div>
+          <div id="infoBar" aria-label="Current glyph information"><div class="info-glyph"><strong id="infoGlyph">A</strong><span id="infoUnicode">U+0041</span></div><label>LSB <output id="infoLSB">0</output></label><label>Width <output id="infoWidth">600</output></label><label>RSB <output id="infoRSB">0</output></label><span class="info-divider" aria-hidden="true"></span><span id="infoMaster">Regular</span></div>
+          <section id="previewBar" aria-label="Live preview"><div class="preview-controls"><span class="section-label">Preview</span><input id="previewText" type="text" value="HAVO eon 123" aria-label="Preview text" /><label>Size <input id="previewSize" type="range" min="24" max="140" value="48" /></label><button id="collapsePreviewBtn" class="icon-btn" type="button" title="Collapse preview" aria-label="Collapse preview"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 10 4-4 4 4"/></svg></button></div><div id="previewSvgWrap"><svg id="previewSvg" aria-label="Text preview"></svg></div></section>
         </main>
+
         <aside id="inspector" aria-label="Inspector and Palette">
-          <div class="side-tabs" role="tablist" aria-label="Inspector tabs">
-            <button data-side="inspector" class="side-tab is-on" type="button">Inspector</button>
-            <button data-side="palette" class="side-tab" type="button">Palette</button>
-            <button data-side="kerning" class="side-tab" type="button">Kerning</button>
-            <button data-side="features" class="side-tab" type="button">Features</button>
-            <button data-side="export" class="side-tab" type="button">Export</button>
-            <button data-side="fontinfo" class="side-tab" type="button">Font Info</button>
-          </div>
-          <section id="side-inspector" class="side-page is-on"></section>
-          <section id="side-palette" class="side-page"></section>
-          <section id="side-kerning" class="side-page"></section>
-          <section id="side-features" class="side-page"></section>
-          <section id="side-export" class="side-page"></section>
-          <section id="side-fontinfo" class="side-page"></section>
+          <div class="side-title"><strong>Inspector</strong><span id="sideContext" class="muted">Selection</span></div>
+          <div class="side-tabs" role="tablist" aria-label="Inspector tabs"><button data-side="inspector" class="side-tab is-on" type="button">Glyph</button><button data-side="palette" class="side-tab" type="button">Palette</button><button data-side="kerning" class="side-tab" type="button">Kerning</button><button data-side="features" class="side-tab side-tab-secondary" type="button">Features</button><button data-side="export" class="side-tab side-tab-secondary" type="button">Export</button><button data-side="fontinfo" class="side-tab side-tab-secondary" type="button">Font Info</button></div>
+          <div class="side-pages"><section id="side-inspector" class="side-page is-on"></section><section id="side-palette" class="side-page"></section><section id="side-kerning" class="side-page"></section><section id="side-features" class="side-page"></section><section id="side-export" class="side-page"></section><section id="side-fontinfo" class="side-page"></section></div>
         </aside>
       </div>
-      <footer id="statusbar">
-        <span id="statusMsg">Ready — Pen draws, Select drags nodes. Ctrl+S saves .glyphs.</span>
-        <span id="statusRight" class="muted"></span>
-      </footer>
+      <footer id="statusbar"><span id="statusMsg">Ready — draw, space, kern, and proof your font.</span><span id="statusRight" class="muted"></span></footer>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
