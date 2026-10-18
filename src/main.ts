@@ -39,6 +39,48 @@ interface AppState {
   glyphFilter: GlyphFilter; glyphSort: GlyphSortMode;
 }
 
+interface WorkspacePrefs {
+  leftPanel: number;
+  rightPanel: number;
+  previewHeight: number;
+  leftCollapsed: boolean;
+  rightCollapsed: boolean;
+  previewCollapsed: boolean;
+}
+
+const WORKSPACE_PREFS_KEY = "glyphs-windows.workspace.v1";
+const DEFAULT_WORKSPACE_PREFS: WorkspacePrefs = {
+  leftPanel: 220,
+  rightPanel: 286,
+  previewHeight: 115,
+  leftCollapsed: false,
+  rightCollapsed: false,
+  previewCollapsed: false,
+};
+
+function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numeric) ? Math.min(max, Math.max(min, Math.round(numeric))) : fallback;
+}
+
+function loadWorkspacePrefs(): WorkspacePrefs {
+  try {
+    const stored = JSON.parse(localStorage.getItem(WORKSPACE_PREFS_KEY) || "{}") as Partial<WorkspacePrefs>;
+    return {
+      leftPanel: clampNumber(stored.leftPanel, DEFAULT_WORKSPACE_PREFS.leftPanel, 176, 340),
+      rightPanel: clampNumber(stored.rightPanel, DEFAULT_WORKSPACE_PREFS.rightPanel, 236, 380),
+      previewHeight: clampNumber(stored.previewHeight, DEFAULT_WORKSPACE_PREFS.previewHeight, 82, 360),
+      leftCollapsed: stored.leftCollapsed === true,
+      rightCollapsed: stored.rightCollapsed === true,
+      previewCollapsed: stored.previewCollapsed === true,
+    };
+  } catch {
+    return { ...DEFAULT_WORKSPACE_PREFS };
+  }
+}
+
+const workspacePrefs = loadWorkspacePrefs();
+
 const state: AppState = {
   font: createDefaultFont(),
   currentGlyphName: "A",
@@ -56,6 +98,7 @@ function setWorkspace(mode: "edit" | "font"): void {
   $("#app").classList.toggle("workspace-font", mode === "font");
   $("#wsFontBtn").classList.toggle("is-on", mode === "font");
   $("#wsEditBtn").classList.toggle("is-on", mode === "edit");
+  $<HTMLButtonElement>("#toggleLeftBtn").disabled = mode === "font";
   renderTabs();
   if (mode === "font") renderFontView();
   else requestAnimationFrame(() => activeEd.refresh(state.font, currentGlyph()));
@@ -83,19 +126,51 @@ const editorHooks: EditorHooks = {
   },
   onStatus(msg) { setStatus(msg); },
   onTextFocus() { const input = $<HTMLInputElement>("#previewText"); input.focus(); input.select(); },
-  onRender() { /* status line updated in renderDynamic */ },
+  onRender() { /* supplied per editor so the active canvas owns the zoom readout */ },
   onMeasure(info) { showMeasure(info); },
 };
 
+let activeEd: Editor;
 const editor = createEditor($<SVGSVGElement>("#editorSvg"), {
   ...editorHooks,
   onActivate() { activeEd = editor; },
+  onRender(info) { if (!activeEd || activeEd === editor) updateZoomReadout(info.scale); },
 });
 const editorB = createEditor($<SVGSVGElement>("#editorSvgB"), {
   ...editorHooks,
   onActivate() { activeEd = editorB; },
+  onRender(info) { if (activeEd === editorB) updateZoomReadout(info.scale); },
 });
-let activeEd: Editor = editor;
+activeEd = editor;
+
+let viewportResizeFrame = 0;
+const viewportResizeObserver = new ResizeObserver(() => {
+  cancelAnimationFrame(viewportResizeFrame);
+  viewportResizeFrame = requestAnimationFrame(() => {
+    editor.resizeViewport();
+    if (state.splitView) editorB.resizeViewport();
+  });
+});
+viewportResizeObserver.observe($<HTMLElement>("#canvasWrap"));
+
+function updateZoomReadout(scale: number): void {
+  $("#zoomReadout").textContent = `${Math.round(scale * 100)}%`;
+}
+
+function updateCanvasHud(): void {
+  const glyphIndex = state.font.glyphs.findIndex((glyph) => glyph.name === state.currentGlyphName);
+  $("#canvasGlyphLabel").textContent = state.currentGlyphName || "—";
+  $<HTMLButtonElement>("#previousGlyphBtn").disabled = glyphIndex <= 0;
+  $<HTMLButtonElement>("#nextGlyphBtn").disabled = glyphIndex < 0 || glyphIndex >= state.font.glyphs.length - 1;
+}
+
+function navigateGlyph(delta: -1 | 1): void {
+  const glyphIndex = state.font.glyphs.findIndex((glyph) => glyph.name === state.currentGlyphName);
+  const next = state.font.glyphs[glyphIndex + delta];
+  if (!next) return;
+  openGlyph(next.name, true);
+  setStatus(`${delta < 0 ? "Previous" : "Next"} glyph: ${next.name}.`);
+}
 
 function refreshPaneB(refit = false): void {
   if (!state.splitView) return;
@@ -371,6 +446,7 @@ function renderHeader() {
   $("#statusRight").textContent = g
     ? `${state.font.familyName} · ${g.name} · width ${g.width} · LSB ${g.lsb} RSB ${g.rsb} · ${state.font.glyphs.length} glyphs`
     : state.font.familyName;
+  updateCanvasHud();
 }
 
 function renderDynamic(refitSide = true) {
@@ -1477,10 +1553,119 @@ function dispatch(cmd: string): void {
   }
 }
 
+type PaneDimension = "leftPanel" | "rightPanel" | "previewHeight";
+
+function persistWorkspacePrefs(): void {
+  try {
+    localStorage.setItem(WORKSPACE_PREFS_KEY, JSON.stringify(workspacePrefs));
+  } catch {
+    // The workspace remains usable when storage is blocked or unavailable.
+  }
+}
+
+function dimensionLimits(dimension: PaneDimension): { min: number; max: number } {
+  if (dimension === "leftPanel") return { min: 176, max: 340 };
+  if (dimension === "rightPanel") return { min: 236, max: 380 };
+  const editHeight = $("#editview").getBoundingClientRect().height;
+  return { min: 82, max: Math.max(120, Math.min(360, Math.round(editHeight * .48) || 360)) };
+}
+
+function applyPaneDimension(dimension: PaneDimension, value: number, commit = false): void {
+  const { min, max } = dimensionLimits(dimension);
+  const next = clampNumber(value, workspacePrefs[dimension], min, max);
+  workspacePrefs[dimension] = next;
+  const cssName = dimension === "leftPanel" ? "--left-panel-pref" : dimension === "rightPanel" ? "--right-panel-pref" : "--preview-height";
+  ($<HTMLElement>("#app")).style.setProperty(cssName, `${next}px`);
+  const separator = dimension === "leftPanel" ? $("#leftResize") : dimension === "rightPanel" ? $("#rightResize") : $("#previewResize");
+  separator.setAttribute("aria-valuenow", String(next));
+  separator.setAttribute("aria-valuemax", String(max));
+  if (commit) {
+    persistWorkspacePrefs();
+    requestAnimationFrame(() => {
+      editor.refresh(state.font, currentGlyph());
+      refreshPaneB(false);
+    });
+  }
+}
+
+function syncChromePrefs(): void {
+  const app = $<HTMLElement>("#app");
+  app.style.setProperty("--left-panel-pref", `${workspacePrefs.leftPanel}px`);
+  app.style.setProperty("--right-panel-pref", `${workspacePrefs.rightPanel}px`);
+  app.style.setProperty("--preview-height", `${workspacePrefs.previewHeight}px`);
+  app.classList.toggle("left-collapsed", workspacePrefs.leftCollapsed);
+  app.classList.toggle("right-collapsed", workspacePrefs.rightCollapsed);
+  app.classList.toggle("preview-collapsed", workspacePrefs.previewCollapsed);
+  for (const [selector, expanded] of [
+    ["#toggleLeftBtn", !workspacePrefs.leftCollapsed],
+    ["#toggleRightBtn", !workspacePrefs.rightCollapsed],
+    ["#togglePreviewBtn", !workspacePrefs.previewCollapsed],
+  ] as const) {
+    const button = $<HTMLButtonElement>(selector);
+    button.classList.toggle("is-on", expanded);
+    button.setAttribute("aria-pressed", String(expanded));
+  }
+  applyPaneDimension("leftPanel", workspacePrefs.leftPanel);
+  applyPaneDimension("rightPanel", workspacePrefs.rightPanel);
+  applyPaneDimension("previewHeight", workspacePrefs.previewHeight);
+}
+
+function setupPaneResizer(selector: string, dimension: PaneDimension): void {
+  const separator = $<HTMLElement>(selector);
+  const isPreview = dimension === "previewHeight";
+  separator.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const origin = isPreview ? event.clientY : event.clientX;
+    const initial = workspacePrefs[dimension];
+    separator.setPointerCapture(event.pointerId);
+    separator.classList.add("is-dragging");
+    document.body.classList.add("is-resizing");
+    document.body.classList.toggle("is-resizing-preview", isPreview);
+    const move = (nextEvent: PointerEvent) => {
+      const pointer = isPreview ? nextEvent.clientY : nextEvent.clientX;
+      const delta = pointer - origin;
+      const signedDelta = dimension === "rightPanel" || isPreview ? -delta : delta;
+      applyPaneDimension(dimension, initial + signedDelta);
+    };
+    const finish = () => {
+      separator.removeEventListener("pointermove", move);
+      separator.removeEventListener("pointerup", finish);
+      separator.removeEventListener("pointercancel", finish);
+      separator.classList.remove("is-dragging");
+      document.body.classList.remove("is-resizing", "is-resizing-preview");
+      applyPaneDimension(dimension, workspacePrefs[dimension], true);
+    };
+    separator.addEventListener("pointermove", move);
+    separator.addEventListener("pointerup", finish);
+    separator.addEventListener("pointercancel", finish);
+  });
+  separator.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? 32 : 8;
+    let delta = 0;
+    if (dimension === "leftPanel") delta = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
+    if (dimension === "rightPanel") delta = event.key === "ArrowLeft" ? step : event.key === "ArrowRight" ? -step : 0;
+    if (dimension === "previewHeight") delta = event.key === "ArrowUp" ? step : event.key === "ArrowDown" ? -step : 0;
+    const { min, max } = dimensionLimits(dimension);
+    if (event.key === "Home") delta = min - workspacePrefs[dimension];
+    if (event.key === "End") delta = max - workspacePrefs[dimension];
+    if (!delta) return;
+    event.preventDefault();
+    applyPaneDimension(dimension, workspacePrefs[dimension] + delta, true);
+  });
+  separator.addEventListener("dblclick", () => {
+    applyPaneDimension(dimension, DEFAULT_WORKSPACE_PREFS[dimension], true);
+  });
+}
+
 function toggleChromePanel(className: "left-collapsed" | "right-collapsed" | "preview-collapsed", button: HTMLButtonElement): void {
   const collapsed = $("#app").classList.toggle(className);
   button.classList.toggle("is-on", !collapsed);
   button.setAttribute("aria-pressed", String(!collapsed));
+  if (className === "left-collapsed") workspacePrefs.leftCollapsed = collapsed;
+  if (className === "right-collapsed") workspacePrefs.rightCollapsed = collapsed;
+  if (className === "preview-collapsed") workspacePrefs.previewCollapsed = collapsed;
+  persistWorkspacePrefs();
   requestAnimationFrame(() => {
     editor.refresh(state.font, currentGlyph());
     refreshPaneB(false);
@@ -1545,6 +1730,14 @@ $("#collapsePreviewBtn").addEventListener("click", () => {
   const button = $<HTMLButtonElement>("#togglePreviewBtn");
   toggleChromePanel("preview-collapsed", button);
 });
+setupPaneResizer("#leftResize", "leftPanel");
+setupPaneResizer("#rightResize", "rightPanel");
+setupPaneResizer("#previewResize", "previewHeight");
+$("#previousGlyphBtn").addEventListener("click", () => navigateGlyph(-1));
+$("#nextGlyphBtn").addEventListener("click", () => navigateGlyph(1));
+$("#zoomOutBtn").addEventListener("click", () => activeEd.zoomBy(1 / 1.25));
+$("#zoomInBtn").addEventListener("click", () => activeEd.zoomBy(1.25));
+$("#zoomFitBtn").addEventListener("click", () => activeEd.zoomFit());
 $<HTMLInputElement>("#cellSize").addEventListener("input", (ev) => {
   state.cellSize = +(ev.target as HTMLInputElement).value || 88;
   renderFontView();
@@ -1657,6 +1850,8 @@ document.addEventListener("keydown", (ev) => {
 
 // Boot. In the Electron shell the native menu drives the same commands.
 $("#app").classList.toggle("is-desktop", isDesktop());
+syncChromePrefs();
+$<HTMLButtonElement>("#toggleLeftBtn").disabled = state.workspace === "font";
 onDesktopMenuCommand((command) => dispatch(command));
 editor.setGlyph(state.font, currentGlyph());
 renderAll();

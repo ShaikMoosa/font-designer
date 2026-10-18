@@ -40,6 +40,7 @@ export interface Editor {
   refresh: (font: Font | null, glyph: Glyph | null) => void;
   setTool: (tool: Tool) => void;
   zoomBy: (f: number) => void;
+  resizeViewport: () => void;
   toggleGuides: () => boolean;
   toggleNodes: () => boolean;
   deleteSelected: () => void;
@@ -65,6 +66,7 @@ interface EditorState {
   masterOverride: string | null;
   pencilPts: FontPoint[] | null;
   measureA: FontPoint | null; measureB: FontPoint | null; measureFixed: boolean;
+  viewportWidth: number; viewportHeight: number;
 }
 
 export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
@@ -80,6 +82,7 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     masterOverride: null,
     pencilPts: null,
     measureA: null, measureB: null, measureFixed: false,
+    viewportWidth: 0, viewportHeight: 0,
   };
 
   function fontToScreen(x: number, y: number): FontPoint {
@@ -140,6 +143,20 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
     state.scale = Math.max(0.08, Math.min(state.scale, 2.5));
     state.tx = w / 2 - (width / 2) * state.scale;
     state.ty = h * 0.72;
+    state.viewportWidth = rect.width;
+    state.viewportHeight = rect.height;
+    render();
+  }
+
+  function resizeViewport(): void {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    if (state.viewportWidth && state.viewportHeight) {
+      state.tx += (rect.width - state.viewportWidth) / 2;
+      state.ty += (rect.height - state.viewportHeight) / 2;
+    }
+    state.viewportWidth = rect.width;
+    state.viewportHeight = rect.height;
     render();
   }
 
@@ -597,7 +614,7 @@ export function createEditor(svg: SVGSVGElement, hooks: EditorHooks): Editor {
   }
 
   return {
-    setGlyph, render, zoomFit,
+    setGlyph, render, zoomFit, resizeViewport,
     refresh(font: Font | null, glyph: Glyph | null) { state.font = font; state.glyph = glyph; render(); },
     setTool(tool: Tool) {
       state.tool = tool;

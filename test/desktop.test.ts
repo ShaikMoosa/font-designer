@@ -93,3 +93,20 @@ test("Electron shell uses native dialogs behind a secure preload bridge", () => 
   assert.match(preload, /glyphs:open-file/);
   assert.match(preload, /glyphs:save-file/);
 });
+
+test("workspace shell keeps panes adjustable and canvas navigation close to the work", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const renderer = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../src/style.css", import.meta.url), "utf8");
+  for (const id of ["leftResize", "rightResize", "previewResize"]) {
+    assert.match(html, new RegExp(`id="${id}"[^>]+role="separator"`));
+  }
+  for (const id of ["previousGlyphBtn", "nextGlyphBtn", "zoomOutBtn", "zoomInBtn", "zoomFitBtn"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(renderer, /glyphs-windows\.workspace\.v1/);
+  assert.match(renderer, /setupPaneResizer\("#leftResize", "leftPanel"\)/);
+  assert.match(renderer, /localStorage\.setItem\(WORKSPACE_PREFS_KEY/);
+  assert.match(css, /--left-panel:\s*clamp/);
+  assert.match(css, /#canvasHud/);
+});
