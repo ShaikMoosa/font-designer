@@ -176,6 +176,14 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   and note live on the glyph, are edited in the Inspector, shown in the
   details pane, and round-trip through `.glyphs` (JSON and OpenStep)
   and UFO GLIF files.
+- **Phase 12 slice 1 — Settings + sample strings:** A Settings
+  dialog (View menu or Ctrl+,) stores the compile-service URL,
+  default preview size, and guide/node defaults on the device
+  (`src/settings.ts`, unit-tested). The Preview bar gains a Sample…
+  menu (Latin, figures, kerning pairs, Greek, Cyrillic) plus Save
+  sample for custom proof strings. RTL/complex-script samples are
+  deliberately not offered — the shaping subset would misrender
+  them. Shortcuts discovery landed earlier in R6.
 - **Pre-Phase 12 UI Ramp R5 — Masters, interpolation, proofing:** A
   Masters bar above the canvas provides a master/layer browser (active,
   visible, hidden, missing states with contour/node counts), Off /

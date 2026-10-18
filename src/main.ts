@@ -26,7 +26,14 @@ import { proofExportBytes, proofGate } from "./proofing.ts";
 import { addExtremes, findDuplicateNodes, fitCurveContours, fixContourDirections, offsetContours, removeDuplicateNodes, resegmentContours, roundCorners, unionContours, differenceContours } from "./pathsurgery.ts";
 import { base64ToBytes, desktopOpenFile, desktopSaveBytes, desktopSaveText, fileKindForName, isDesktop, onDesktopMenuCommand } from "./desktop.ts";
 
-const COMPILE_SERVICE = "http://127.0.0.1:8765";
+import { SETTINGS_KEY, addCustomSample, allSamples, normalizeSettings, parseSettings, removeCustomSample, serializeSettings } from "./settings.ts";
+import type { AppSettings } from "./settings.ts";
+
+let appSettings: AppSettings = parseSettings(null);
+function compileService(): string { return appSettings.compileServiceUrl; }
+function persistSettings(): void {
+  try { localStorage.setItem(SETTINGS_KEY, serializeSettings(appSettings)); } catch { /* Settings stay usable without storage. */ }
+}
 import { createEditor } from "./editor.ts";
 import type { Editor, EditorHooks, GhostLayer, MeasureInfo, Tool } from "./editor.ts";
 
@@ -2422,7 +2429,7 @@ async function deliverBytes(filename: string, bytes: Uint8Array<ArrayBuffer>, mi
 /** Binary font exports are proofed by fontTools readback (Phase 8)
  * before delivery; a failed proof blocks the export. */
 async function proofAndDeliver(filename: string, bytes: Uint8Array<ArrayBuffer>, mime: string, success: string): Promise<void> {
-  const proof = await proofExportBytes(bytes, COMPILE_SERVICE);
+  const proof = await proofExportBytes(bytes, compileService());
   const gate = proofGate(proof, isDesktop());
   if (!gate.deliver) { setStatus(`Export blocked: ${gate.note}`); return; }
   if (!await deliverBytes(filename, bytes, mime)) { setStatus("Export cancelled."); return; }
@@ -2457,7 +2464,7 @@ async function probeCompileService(statusEl: HTMLElement): Promise<boolean> {
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 900);
-      const res = await fetch(`${COMPILE_SERVICE}/health`, { signal: ctrl.signal });
+      const res = await fetch(`${compileService()}/health`, { signal: ctrl.signal });
       clearTimeout(timer);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const info = (await res.json()) as { fontTools?: string; brotli?: boolean };
@@ -2524,14 +2531,14 @@ async function runExport(format: string): Promise<void> {
       return;
     }
     if (format === "woff2") {
-      const res = await fetch(`${COMPILE_SERVICE}/compile/woff2`, { method: "POST", body: fontToTtfBytes(state.font) as BlobPart });
+      const res = await fetch(`${compileService()}/compile/woff2`, { method: "POST", body: fontToTtfBytes(state.font) as BlobPart });
       if (!res.ok) throw new Error(`service HTTP ${res.status}: ${await res.text()}`);
       await proofAndDeliver(`${base}.woff2`, new Uint8Array(await res.arrayBuffer()), "font/woff2", "Exported WOFF2 via the compile service.");
       return;
     }
     if (format === "variable") {
       if (state.font.masters.length < 2) { setStatus("Variable export needs at least two masters — copy a layer to a new master in the Palette first."); return; }
-      const res = await fetch(`${COMPILE_SERVICE}/compile/variable`, { method: "POST", body: fontToDesignspaceBundle(state.font) as BlobPart });
+      const res = await fetch(`${compileService()}/compile/variable`, { method: "POST", body: fontToDesignspaceBundle(state.font) as BlobPart });
       if (!res.ok) throw new Error(`service HTTP ${res.status}: ${await res.text()}`);
       await proofAndDeliver(`${base}-Variable.ttf`, new Uint8Array(await res.arrayBuffer()), "font/ttf", "Exported variable font via the compile service. Check the default instance against the Palette interpolation ghost.");
       return;
@@ -2539,6 +2546,47 @@ async function runExport(format: string): Promise<void> {
   } catch (err) {
     setStatus(`Export failed (${format}): ${(err as Error).message}. Browser formats still work without the service.`);
   }
+}
+
+function renderSampleOptions(): void {
+  const select = $<HTMLSelectElement>("#sampleSelect");
+  const current = $<HTMLInputElement>("#previewText").value;
+  select.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Sample…";
+  select.appendChild(placeholder);
+  for (const sample of allSamples(appSettings)) {
+    const option = document.createElement("option");
+    option.value = sample.text;
+    option.textContent = sample.label;
+    if (sample.text === current) option.selected = true;
+    select.appendChild(option);
+  }
+}
+
+function renderSettings(): void {
+  $<HTMLInputElement>("#setServiceUrl").value = appSettings.compileServiceUrl;
+  $<HTMLInputElement>("#setPreviewSize").value = String(appSettings.defaultPreviewSize);
+  $<HTMLInputElement>("#setGuides").checked = appSettings.showGuides;
+  $<HTMLInputElement>("#setNodes").checked = appSettings.showNodes;
+  const samplesEl = $<HTMLElement>("#setSamples");
+  samplesEl.innerHTML = appSettings.customSamples.length
+    ? appSettings.customSamples.map((sample) => `<div class="compat-row"><span>${escHtml(sample)}</span><button data-sample-del="${escHtml(sample)}" type="button">Delete</button></div>`).join("")
+    : '<span class="hint">No custom samples yet — use Save sample next to the preview text.</span>';
+  samplesEl.querySelectorAll<HTMLButtonElement>("[data-sample-del]").forEach((button) => button.addEventListener("click", () => {
+    appSettings = removeCustomSample(appSettings, button.dataset.sampleDel || "");
+    persistSettings();
+    renderSettings();
+    renderSampleOptions();
+    setStatus("Custom sample deleted.");
+  }));
+}
+
+function openSettings(): void {
+  renderSettings();
+  const dialog = $<HTMLDialogElement>("#settingsDialog");
+  if (!dialog.open) dialog.showModal();
 }
 
 function openShortcuts(): void {
@@ -2593,6 +2641,7 @@ function dispatch(cmd: string): void {
     case "toggle-preview": toggleChromePanel("preview-collapsed", $<HTMLButtonElement>("#togglePreviewBtn")); break;
     case "reset-layout": resetWorkspaceLayout(); break;
     case "shortcuts": openShortcuts(); break;
+    case "settings": openSettings(); break;
     case "add-glyph": addGlyphFlow(); break;
     case "create-composite": createCompositeFlow(); break;
     case "add-rect": if (g) activeEd.addContour(rectContour(80, 0, 360, 500)); break;
@@ -3063,6 +3112,7 @@ document.addEventListener("keydown", (ev) => {
   if (mod && ev.key.toLowerCase() === "z" && !ev.shiftKey) { ev.preventDefault(); undo(); return; }
   if ((mod && ev.key.toLowerCase() === "y") || (mod && ev.shiftKey && ev.key.toLowerCase() === "z")) { ev.preventDefault(); redo(); return; }
   if (mod && ev.altKey && ev.key === "0") { ev.preventDefault(); resetWorkspaceLayout(); return; }
+  if (mod && ev.key === ",") { ev.preventDefault(); openSettings(); return; }
   if (!typing && ev.key === "?") { ev.preventDefault(); openShortcuts(); return; }
   if (typing) return;
   if (ev.key === "[") { ev.preventDefault(); navigateMaster(-1); return; }
@@ -3211,6 +3261,62 @@ $<HTMLDialogElement>("#shortcutsDialog").addEventListener("click", (event) => {
   if (event.target === event.currentTarget) $<HTMLDialogElement>("#shortcutsDialog").close();
 });
 $("#closeShortcutsDialog").addEventListener("click", () => $<HTMLDialogElement>("#shortcutsDialog").close());
+$<HTMLSelectElement>("#sampleSelect").addEventListener("change", (event) => {
+  const text = (event.target as HTMLSelectElement).value;
+  if (!text) return;
+  $<HTMLInputElement>("#previewText").value = text;
+  renderPreview();
+  setStatus("Sample string applied to the preview.");
+});
+$("#saveSampleBtn").addEventListener("click", () => {
+  const text = $<HTMLInputElement>("#previewText").value;
+  const before = appSettings.customSamples.length;
+  appSettings = addCustomSample(appSettings, text);
+  persistSettings();
+  renderSampleOptions();
+  setStatus(appSettings.customSamples.length > before ? "Custom sample saved — find it under Sample… or in Settings." : "That sample is already saved (or empty).");
+});
+$<HTMLInputElement>("#setServiceUrl").addEventListener("change", (event) => {
+  appSettings = normalizeSettings({ ...appSettings, compileServiceUrl: (event.target as HTMLInputElement).value });
+  persistSettings();
+  renderSettings();
+  setStatus(`Compile service: ${compileService()} — checked again on the next export.`);
+});
+$<HTMLInputElement>("#setPreviewSize").addEventListener("change", (event) => {
+  appSettings = normalizeSettings({ ...appSettings, defaultPreviewSize: +(event.target as HTMLInputElement).value || 48 });
+  persistSettings();
+  $<HTMLInputElement>("#previewSize").value = String(appSettings.defaultPreviewSize);
+  renderPreview();
+  setStatus(`Default preview size: ${appSettings.defaultPreviewSize}.`);
+});
+$<HTMLInputElement>("#setGuides").addEventListener("change", (event) => {
+  appSettings = { ...appSettings, showGuides: (event.target as HTMLInputElement).checked };
+  persistSettings();
+  setStatus("Guide preference saved — applies to editors opened from now on and at next launch.");
+});
+$<HTMLInputElement>("#setNodes").addEventListener("change", (event) => {
+  appSettings = { ...appSettings, showNodes: (event.target as HTMLInputElement).checked };
+  persistSettings();
+  setStatus("Node preference saved — applies to editors opened from now on and at next launch.");
+});
+$("#setResetLayout").addEventListener("click", () => { resetWorkspaceLayout(); });
+$("#setResetAll").addEventListener("click", () => {
+  appSettings = parseSettings(null);
+  persistSettings();
+  renderSettings();
+  renderSampleOptions();
+  $<HTMLInputElement>("#previewSize").value = String(appSettings.defaultPreviewSize);
+  renderPreview();
+  setStatus("All settings reset to defaults.");
+});
+$<HTMLDialogElement>("#settingsDialog").addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) $<HTMLDialogElement>("#settingsDialog").close();
+});
+$("#closeSettingsDialog").addEventListener("click", () => $<HTMLDialogElement>("#settingsDialog").close());
+
+// Boot settings: stored preferences override the compiled defaults.
+try { appSettings = parseSettings(localStorage.getItem(SETTINGS_KEY)); } catch { appSettings = parseSettings(null); }
+$<HTMLInputElement>("#previewSize").value = String(appSettings.defaultPreviewSize);
 
 // Boot. In the Electron shell the native menu drives the same commands.
 $("#app").classList.toggle("is-desktop", isDesktop());
@@ -3218,6 +3324,9 @@ syncChromePrefs();
 $<HTMLButtonElement>("#toggleLeftBtn").disabled = state.workspace === "font";
 onDesktopMenuCommand((command) => dispatch(command));
 editor.setGlyph(state.font, currentGlyph());
+if (!appSettings.showGuides) { editor.toggleGuides(); editorB.toggleGuides(); }
+if (!appSettings.showNodes) { editor.toggleNodes(); editorB.toggleNodes(); }
+renderSampleOptions();
 renderAll();
 if (state.splitView) {
   editorB.setMasterOverride(state.paneBMasterId || null);

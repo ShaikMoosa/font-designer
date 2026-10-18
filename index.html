@@ -18,7 +18,7 @@
             <button data-cmd="undo" type="button">Undo <kbd>Ctrl+Z</kbd></button><button data-cmd="redo" type="button">Redo <kbd>Ctrl+Y</kbd></button><div class="menu-rule"></div><button data-cmd="delete-sel" type="button">Delete Selection <kbd>Del</kbd></button><button data-cmd="close-path" type="button">Close Path</button><button data-cmd="cut-path" type="button">Cut Path at Node</button><button data-cmd="convert" type="button">Convert Node</button>
           </div></div>
           <div class="menu"><button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">View</button><div class="menu-drop">
-            <button data-cmd="zoom-in" type="button">Zoom In <kbd>Ctrl++</kbd></button><button data-cmd="zoom-out" type="button">Zoom Out <kbd>Ctrl+-</kbd></button><button data-cmd="zoom-fit" type="button">Zoom to Fit <kbd>Ctrl+0</kbd></button><div class="menu-rule"></div><button data-cmd="toggle-guides" type="button">Toggle Guides</button><button data-cmd="toggle-nodes" type="button">Toggle Nodes</button><div class="menu-rule"></div><button data-cmd="toggle-navigator" type="button">Toggle Navigator</button><button data-cmd="shortcuts" type="button">Keyboard Shortcuts <kbd>?</kbd></button><button data-cmd="toggle-inspector" type="button">Toggle Inspector</button><button data-cmd="toggle-preview" type="button">Toggle Preview</button><button data-cmd="reset-layout" type="button">Reset Workspace Layout <kbd>Ctrl+Alt+0</kbd></button>
+            <button data-cmd="zoom-in" type="button">Zoom In <kbd>Ctrl++</kbd></button><button data-cmd="zoom-out" type="button">Zoom Out <kbd>Ctrl+-</kbd></button><button data-cmd="zoom-fit" type="button">Zoom to Fit <kbd>Ctrl+0</kbd></button><div class="menu-rule"></div><button data-cmd="toggle-guides" type="button">Toggle Guides</button><button data-cmd="toggle-nodes" type="button">Toggle Nodes</button><div class="menu-rule"></div><button data-cmd="toggle-navigator" type="button">Toggle Navigator</button><button data-cmd="shortcuts" type="button">Keyboard Shortcuts <kbd>?</kbd></button><button data-cmd="settings" type="button">Settings… <kbd>Ctrl+,</kbd></button><button data-cmd="toggle-inspector" type="button">Toggle Inspector</button><button data-cmd="toggle-preview" type="button">Toggle Preview</button><button data-cmd="reset-layout" type="button">Reset Workspace Layout <kbd>Ctrl+Alt+0</kbd></button>
           </div></div>
           <div class="menu"><button class="menu-btn" type="button" aria-haspopup="true" aria-expanded="false">Glyph</button><div class="menu-drop">
             <button data-cmd="add-glyph" type="button">Add Glyph…</button><button data-cmd="create-composite" type="button">Create Composite…</button><button data-cmd="add-rect" type="button">Add Rectangle</button><button data-cmd="add-ellipse" type="button">Add Ellipse</button>
@@ -88,7 +88,7 @@
               <div id="infoBar" aria-label="Current glyph information"><div class="info-glyph"><strong id="infoGlyph">A</strong><span id="infoUnicode">U+0041</span></div><label>LSB <output id="infoLSB">0</output></label><label>Width <output id="infoWidth">600</output></label><label>RSB <output id="infoRSB">0</output></label><span class="info-divider" aria-hidden="true"></span><div id="infoKernContext" class="info-kern-context"><label>Left pair <output id="infoLeftKern">—</output></label><label>Right pair <output id="infoRightKern">—</output></label></div><span class="info-spacer"></span><span id="infoSelection">No nodes selected</span><span class="info-divider" aria-hidden="true"></span><span id="infoMaster">Regular</span></div>
             </div>
             <div id="previewResize" class="pane-resizer pane-resizer-horizontal" role="separator" aria-label="Resize preview" aria-orientation="horizontal" aria-valuemin="82" aria-valuemax="360" aria-valuenow="115" tabindex="0"><span aria-hidden="true"></span></div>
-            <section id="previewBar" aria-label="Live preview"><div class="preview-controls"><span class="section-label">Preview</span><span id="previewDockLabel" class="preview-dock-label">Bottom</span><input id="previewText" type="text" value="HAVO eon 123" aria-label="Preview text" /><label>Size <input id="previewSize" type="range" min="24" max="140" value="48" /></label><button id="dockPreviewBtn" class="icon-btn" type="button" title="Dock preview on the right" aria-label="Dock preview on the right"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M9.5 3v10"/></svg></button><button id="collapsePreviewBtn" class="icon-btn" type="button" title="Collapse preview" aria-label="Collapse preview"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 10 4-4 4 4"/></svg></button></div><div id="previewSvgWrap"><svg id="previewSvg" aria-label="Text preview"></svg></div></section>
+            <section id="previewBar" aria-label="Live preview"><div class="preview-controls"><span class="section-label">Preview</span><span id="previewDockLabel" class="preview-dock-label">Bottom</span><select id="sampleSelect" aria-label="Sample string" title="Sample strings"></select><button id="saveSampleBtn" type="button" title="Save current preview text as a custom sample">Save sample</button><input id="previewText" type="text" value="HAVO eon 123" aria-label="Preview text" /><label>Size <input id="previewSize" type="range" min="24" max="140" value="48" /></label><button id="dockPreviewBtn" class="icon-btn" type="button" title="Dock preview on the right" aria-label="Dock preview on the right"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M9.5 3v10"/></svg></button><button id="collapsePreviewBtn" class="icon-btn" type="button" title="Collapse preview" aria-label="Collapse preview"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 10 4-4 4 4"/></svg></button></div><div id="previewSvgWrap"><svg id="previewSvg" aria-label="Text preview"></svg></div></section>
           </div>
         </main>
 
@@ -132,6 +132,31 @@
             <div><h3>Tools</h3><p><kbd>V</kbd> Select · <kbd>P</kbd> Pen · <kbd>B</kbd> Pencil · <kbd>M</kbd> Measure · <kbd>H</kbd> Hand · <kbd>T</kbd> Text · Space temporary pan</p></div>
             <div><h3>Canvas</h3><p><kbd>Ctrl++</kbd>/<kbd>Ctrl+-</kbd> Zoom · <kbd>Ctrl+0</kbd> Fit · <kbd>Alt+←</kbd>/<kbd>Alt+→</kbd> Prev/next glyph</p></div>
             <div><h3>Masters (R5)</h3><p><kbd>[</kbd> / <kbd>]</kbd> Prev/next master · <kbd>,</kbd> / <kbd>.</kbd> Scrub axis · <kbd>Esc</kbd> Close menus</p></div>
+          </div>
+        </div>
+      </dialog>
+      <dialog id="settingsDialog" aria-labelledby="settingsDialogTitle">
+        <div class="workflow-dialog-shell">
+          <header class="workflow-dialog-header">
+            <div><strong id="settingsDialogTitle">Settings</strong><span>App preferences · stored on this device</span></div>
+            <button id="closeSettingsDialog" class="icon-btn" type="button" aria-label="Close settings" title="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg></button>
+          </header>
+          <div class="settings-body">
+            <div class="field"><label>Compile service URL (WOFF2, variable fonts, export proofing)</label><input id="setServiceUrl" type="text" spellcheck="false" /></div>
+            <p class="hint" id="setServiceHint">The desktop app starts its bundled service automatically; change this only to use a service you started yourself.</p>
+            <div class="field-row">
+              <div class="field"><label>Default preview size</label><input id="setPreviewSize" type="number" min="24" max="140" /></div>
+              <div class="field"><label>Editor defaults</label>
+                <label class="hint"><input id="setGuides" type="checkbox" /> Show guides</label>
+                <label class="hint"><input id="setNodes" type="checkbox" /> Show nodes</label>
+              </div>
+            </div>
+            <div class="field"><label>Custom sample strings</label><div id="setSamples"></div></div>
+            <div class="field-row">
+              <button id="setResetLayout" type="button">Reset workspace layout</button>
+              <button id="setResetAll" type="button">Reset all settings</button>
+            </div>
+            <p class="hint">Samples proof the shaping subset (Latin, Greek, Cyrillic). RTL and complex-script shaping remain deferred, so no RTL samples are offered.</p>
           </div>
         </div>
       </dialog>
