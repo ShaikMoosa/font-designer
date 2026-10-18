@@ -4,6 +4,7 @@ Endpoints (127.0.0.1:8765, CORS open for the local Vite app):
   GET  /health           -> {ok, fontTools, ufo2ft, brotli}
   POST /compile/woff2    body: SFNT bytes        -> WOFF2 bytes
   POST /compile/variable body: designspace bundle zip -> variable TTF bytes
+  POST /compile/autohint body: TTF bytes -> autohinted TTF (X-Autohint-Applied)
   POST /validate         body: font bytes -> fontTools readback report JSON
 
 Run: uv sync && uv run python server.py
@@ -32,6 +33,62 @@ try:
     HAS_BROTLI = True
 except Exception:
     HAS_BROTLI = False
+
+
+def _find_ttfautohint():
+    """Locate the optional ttfautohint binary (ttfautohint-py wheel,
+    venv Scripts, or PATH). Returns the path or None."""
+    import shutil
+    import sysconfig
+    from pathlib import Path as _Path
+
+    candidates = []
+    try:
+        import ttfautohint as _pkg
+
+        pkg_dir = _Path(_pkg.__file__).parent
+        candidates.append(pkg_dir / "ttfautohint.exe")
+        candidates.append(pkg_dir / "ttfautohint")
+    except Exception:
+        pass
+    scripts = sysconfig.get_path("scripts")
+    if scripts:
+        candidates.append(_Path(scripts) / "ttfautohint.exe")
+        candidates.append(_Path(scripts) / "ttfautohint")
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which("ttfautohint")
+
+
+TTFAUTOHINT_BIN = _find_ttfautohint()
+HAS_TTFAUTOHINT = TTFAUTOHINT_BIN is not None
+
+
+def autohint_font(font_bytes: bytes) -> tuple[bytes, bool]:
+    """Run ttfautohint when available. Returns (bytes, applied); when the
+    binary is missing or fails, the original bytes come back unchanged
+    with applied=False so callers can report honestly."""
+    import subprocess
+    import tempfile as _tempfile
+    from pathlib import Path as _Path
+
+    if not HAS_TTFAUTOHINT or not font_bytes:
+        return font_bytes, False
+    try:
+        with _tempfile.TemporaryDirectory() as tmp:
+            src = _Path(tmp) / "in.ttf"
+            dst = _Path(tmp) / "out.ttf"
+            src.write_bytes(font_bytes)
+            proc = subprocess.run(
+                [TTFAUTOHINT_BIN, str(src), str(dst)],
+                capture_output=True, timeout=120,
+            )
+            if proc.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+                return font_bytes, False
+            return dst.read_bytes(), True
+    except Exception:
+        return font_bytes, False
 
 
 def validate_font(font_bytes: bytes) -> dict:
@@ -81,7 +138,7 @@ def compile_woff2(sfnt_bytes: bytes) -> bytes:
     return out.getvalue()
 
 
-def compile_variable(bundle_bytes: bytes) -> bytes:
+def compile_variable(bundle_bytes: bytes) -> tuple[bytes, bool]:
     if not HAS_UFO2FT:
         raise RuntimeError("ufo2ft is not installed in the service env (variable build unavailable)")
     from fontTools.designspaceLib import AxisDescriptor, DesignSpaceDocument, SourceDescriptor
@@ -139,23 +196,30 @@ def compile_variable(bundle_bytes: bytes) -> bytes:
         built = varLib.build(doc)
         # fontTools returns (variableFont, model, masterFonts) on modern versions.
         var_font = built[0] if isinstance(built, tuple) else built
+        raw: bytes | None = None
         if var_font is not None and hasattr(var_font, "save"):
             out = io.BytesIO()
             var_font.save(out)
-            return out.getvalue()
-        candidates = sorted(root.rglob("*.ttf"))
-        if not candidates:
-            raise RuntimeError("variable build produced no TTF")
-        return candidates[0].read_bytes()
+            raw = out.getvalue()
+        if raw is None:
+            candidates = sorted(root.rglob("*.ttf"))
+            if not candidates:
+                raise RuntimeError("variable build produced no TTF")
+            raw = candidates[0].read_bytes()
+        if manifest.get("autohintTT"):
+            return autohint_font(raw)
+        return raw, False
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def _send(self, code: int, body: bytes, content_type: str):
+    def _send(self, code: int, body: bytes, content_type: str, extra: dict | None = None):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
+        for key, value in (extra or {}).items():
+            self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -168,7 +232,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            payload = {"ok": True, "fontTools": FONTTOOLS_VERSION, "ufo2ft": HAS_UFO2FT, "brotli": HAS_BROTLI}
+            payload = {"ok": True, "fontTools": FONTTOOLS_VERSION, "ufo2ft": HAS_UFO2FT, "brotli": HAS_BROTLI, "ttfautohint": HAS_TTFAUTOHINT}
             self._send(200, json.dumps(payload).encode(), "application/json")
         else:
             self._send(404, b'{"error":"not found"}', "application/json")
@@ -181,8 +245,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(validate_font(body)).encode(), "application/json")
             elif self.path == "/compile/woff2":
                 self._send(200, compile_woff2(body), "font/woff2")
+            elif self.path == "/compile/autohint":
+                hinted, applied = autohint_font(body)
+                self._send(200, hinted, "font/ttf", {"X-Autohint-Applied": "yes" if applied else "no", "Access-Control-Expose-Headers": "X-Autohint-Applied"})
             elif self.path == "/compile/variable":
-                self._send(200, compile_variable(body), "font/ttf")
+                built, hint_applied = compile_variable(body)
+                self._send(200, built, "font/ttf", {"X-Autohint-Applied": "yes" if hint_applied else "no", "Access-Control-Expose-Headers": "X-Autohint-Applied"})
             else:
                 self._send(404, b'{"error":"not found"}', "application/json")
         except Exception as exc:

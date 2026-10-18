@@ -153,6 +153,7 @@ function glyphsDoc(font: Font): Loose {
     }, {}),
     kerningGroups: font.kerningGroups,
     axes: font.axes,
+    autohintTT: font.autohintTT ? 1 : undefined,
     featureCode: font.featureCode,
     instances: font.instances,
   };
@@ -327,6 +328,7 @@ export function glyphsJsonToFont(text: string, fileName?: string): Font {
     kerningGroups,
     axes: Array.isArray(doc.axes) && doc.axes.length ? doc.axes : [{ tag: "wght", name: "Weight", min: 400, defaultValue: 400, max: 700 }],
     featureCode: typeof doc.featureCode === "string" ? doc.featureCode : DEFAULT_FEATURE_CODE,
+    autohintTT: doc.autohintTT === 1 || doc.autohintTT === true || doc.autohintTT === "1",
     currentMasterId: masters[0].id,
     fileName: fileName || "Imported.glyphs",
   };

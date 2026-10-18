@@ -10,7 +10,7 @@ import {
   updateGlyphSelection, glyphHasOutline,
   editNavigatorGlyphs, resolveKern,
   compatibilityReport, copyLayerBetweenMasters, instanceT, instanceAxisWeight, cloneContours,
-  sortedMasters, axisRange, weightForT, axisStopsForGlyph, issuesForGlyph, adjacentMaster, instanceProgression, layerSummaries,
+  sortedMasters, axisRange, weightForT, axisStopsForGlyph, issuesForGlyph, adjacentMaster, instanceProgression, layerSummaries, autohintEnabled,
 } from "./model.ts";
 import type { EditNavigatorScope, GlyphFilter, GlyphSortMode } from "./model.ts";
 import { glyphInfoFor, glyphSuggestionFor, productionNameFor, COLOR_LABELS } from "./glyphinfo.ts";
@@ -2060,6 +2060,7 @@ function renderFontInfo(): void {
       <div class="field"><label>x-height</label><input id="fiX" type="number" value="${f.xHeight}" /></div>
     </div>
     <p class="hint"><strong>Features:</strong> automatic ${autoFeatures.kernPairs + autoFeatures.groupPairs} kern rule(s), ${autoFeatures.ligatures} ligature(s), ${autoFeatures.markAttachments + autoFeatures.markToMark} mark rule(s); manual code in the Features tab overrides automatic pairs.</p>
+    <div class="field"><label>Hinting</label><label class="hint"><input id="fiAutohint" type="checkbox" ${autohintEnabled(f) ? "checked" : ""} /> Autohint TrueType on export (compile service applies ttfautohint; browser TTF/WOFF stay unhinted with a gasp table)</label></div>
     <div class="field"><label>Variable axis (first axis feeds the compile service)</label><div id="fiAxes"></div></div>
     <div class="field"><label>Masters</label><div id="fiMasters"></div></div>
     <div class="field"><label>Instances</label><div id="fiInstances"></div>
@@ -2179,6 +2180,14 @@ function renderFontInfo(): void {
       }
     }));
   }
+  qs<HTMLInputElement>(page, "#fiAutohint").addEventListener("change", (event) => {
+    pushUndo();
+    f.autohintTT = (event.target as HTMLInputElement).checked;
+    renderAll();
+    setStatus(f.autohintTT
+      ? "Autohint on: TTF/WOFF2/variable exports ask the compile service to apply ttfautohint. Browser-only exports remain unhinted (gasp included)."
+      : "Autohint off: exports ship unhinted outlines with a gasp table.");
+  });
   bindChange(page.querySelector("#fiFamily"), (el) => { f.familyName = el.value; });
   bindChange(page.querySelector("#fiVersion"), (el) => { f.version = el.value; });
   bindChange(page.querySelector("#fiUpm"), (el) => { f.unitsPerEm = Math.max(16, +el.value || 1000); });
@@ -2515,6 +2524,24 @@ function renderExport(): void {
   });
 }
 
+/** Ask the compile service to autohint TTF bytes. Never blocks: when the
+ * service or the hinter is unavailable the original bytes ship with an
+ * explicit not-applied note. */
+async function autohintViaService(bytes: Uint8Array<ArrayBuffer>): Promise<{ bytes: Uint8Array<ArrayBuffer>; note: string }> {
+  if (!autohintEnabled(state.font)) return { bytes, note: "" };
+  try {
+    const res = await fetch(`${compileService()}/compile/autohint`, { method: "POST", body: bytes as BlobPart });
+    if (!res.ok) throw new Error(`service HTTP ${res.status}`);
+    const applied = res.headers.get("X-Autohint-Applied") === "yes";
+    const out = new Uint8Array(await res.arrayBuffer());
+    return applied
+      ? { bytes: out as Uint8Array<ArrayBuffer>, note: " Autohint applied by the compile service (ttfautohint)." }
+      : { bytes, note: " Autohint requested but not applied (ttfautohint unavailable in the service) — shipped unhinted." };
+  } catch {
+    return { bytes, note: " Autohint requested but the compile service is offline — shipped unhinted." };
+  }
+}
+
 async function runExport(format: string): Promise<void> {
   const base = (state.font.familyName || "Untitled").replace(/[^\w\- ]/g, "").trim() || "Untitled";
   try {
@@ -2523,24 +2550,31 @@ async function runExport(format: string): Promise<void> {
       return;
     }
     if (format === "ttf") {
-      await proofAndDeliver(`${base}.ttf`, fontToTtfBytes(state.font), "font/ttf", "Exported TTF (glyf). Cubic curves were approximated by quadratics (tolerance 4 units).");
+      const hinted = await autohintViaService(fontToTtfBytes(state.font));
+      await proofAndDeliver(`${base}.ttf`, hinted.bytes, "font/ttf", `Exported TTF (glyf, gasp included). Cubic curves were approximated by quadratics (tolerance 4 units).${hinted.note}`);
       return;
     }
     if (format === "woff") {
-      await proofAndDeliver(`${base}.woff`, await fontToWoffBytes(fontToTtfBytes(state.font)), "font/woff", "Exported WOFF (from the TTF build).");
+      const hinted = await autohintViaService(fontToTtfBytes(state.font));
+      await proofAndDeliver(`${base}.woff`, await fontToWoffBytes(hinted.bytes), "font/woff", `Exported WOFF (from the TTF build).${hinted.note}`);
       return;
     }
     if (format === "woff2") {
-      const res = await fetch(`${compileService()}/compile/woff2`, { method: "POST", body: fontToTtfBytes(state.font) as BlobPart });
+      const hinted = await autohintViaService(fontToTtfBytes(state.font));
+      const res = await fetch(`${compileService()}/compile/woff2`, { method: "POST", body: hinted.bytes as BlobPart });
       if (!res.ok) throw new Error(`service HTTP ${res.status}: ${await res.text()}`);
-      await proofAndDeliver(`${base}.woff2`, new Uint8Array(await res.arrayBuffer()), "font/woff2", "Exported WOFF2 via the compile service.");
+      await proofAndDeliver(`${base}.woff2`, new Uint8Array(await res.arrayBuffer()), "font/woff2", `Exported WOFF2 via the compile service.${hinted.note}`);
       return;
     }
     if (format === "variable") {
       if (state.font.masters.length < 2) { setStatus("Variable export needs at least two masters — copy a layer to a new master in the Palette first."); return; }
       const res = await fetch(`${compileService()}/compile/variable`, { method: "POST", body: fontToDesignspaceBundle(state.font) as BlobPart });
       if (!res.ok) throw new Error(`service HTTP ${res.status}: ${await res.text()}`);
-      await proofAndDeliver(`${base}-Variable.ttf`, new Uint8Array(await res.arrayBuffer()), "font/ttf", "Exported variable font via the compile service. Check the default instance against the Palette interpolation ghost.");
+      const hintNote = !autohintEnabled(state.font) ? ""
+        : res.headers.get("X-Autohint-Applied") === "yes"
+          ? " Autohint applied by the compile service (ttfautohint)."
+          : " Autohint requested but not applied (ttfautohint unavailable in the service) — shipped unhinted.";
+      await proofAndDeliver(`${base}-Variable.ttf`, new Uint8Array(await res.arrayBuffer()), "font/ttf", `Exported variable font via the compile service. Check the default instance against the Palette interpolation ghost.${hintNote}`);
       return;
     }
   } catch (err) {

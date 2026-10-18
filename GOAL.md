@@ -41,7 +41,7 @@ Deliver a working font editor in which a user can complete the full arc of makin
 ## Quality & Engineering Standards
 
 - **TypeScript, strict typechecking clean** (`npm run typecheck`).
-- **Every behavior change carries maintained tests** (`npm test`, currently 79 tests) in the repository's own test layout.
+- **Every behavior change carries maintained tests** (`npm test`, currently 82 tests) in the repository's own test layout.
 - **Independent verification:** exported fonts are read back by external tools (fontTools), and UI behavior is proven with a headless-browser playthrough before any feature is called done — a feature is not done because code exists, it is done because its effect was observed.
 - **Honest subset labelling:** wherever the app implements less than full Glyphs/OpenType behavior (feature-code subset, quadratic curve conversion, unmodelled `.glyphs` fields), the UI and README say so plainly instead of implying parity.
 - **Per-phase delivery:** work ships in reviewed phases (plan → implement → verify → commit on the user's word), published to `github.com/ShaikMoosa/font-designer`.
@@ -169,6 +169,42 @@ Finish the UI as a reliable Windows desktop product:
 **Exit gate:** all existing tests pass; `npm run typecheck` and `npm run build` pass; critical UI workflows pass at three viewport sizes and two DPI levels; packaged Electron behavior matches the browser build where platform APIs do not intentionally differ.
 
 **Completed 2026-10-18:** glyph-grid and canvas context menus, a Keyboard Shortcuts dialog (View menu or `?`, including R5 `[` / `]` / `,` / `.` navigation), export busy/disabled states with `aria-busy`, Font View interpolation-warning badges, and retained focus-visible/reduced-motion/high-DPI behavior. Baselines for Edit View (1280×720, 1440×900, 1920×1080, 150% scale), Overlay, Split, and Font View are in `docs/ui-baselines/`. Verified: `npm test` (75/75), `npm run typecheck` (clean), `npm run build` (pass), CDP playthrough 13/13, and the packaged Electron build (output outside `Downloads`, where Windows locks the in-place rename) launching with the bundled `fontc` sidecar healthy (fontTools 4.67.0). In-place `npm run dist:win` currently stops at the same Windows rename lock (`EPERM` on `release/win-unpacked.tmp`); the identical packaging succeeds with an external output directory, so treat installer regeneration in `Downloads` as an environment retry, not a code failure.
+
+## Phase 12 — Font-Engine Candidates (planned 2026-10-18)
+
+Slice 1 (Settings, sample strings, shortcuts) is complete. The remaining candidates ship one phase at a time, in this order, each plan → implement → verify → commit/push on the user's word. No phase smuggles in the next phase's engine work.
+
+### Phase 12A — Autohinting (TrueType, via compile service) (complete 2026-10-18)
+
+Shipped: `Font.autohintTT` toggle in Font Info, round-tripped through `.glyphs` JSON/OpenStep and UFO/designspace manifests (reader included); browser TTF writes `gasp` (grayscale + symmetric smoothing, no gridfit claim); compile service detects the `ttfautohint-py` binary (`/health.ttfautohint`), exposes `POST /compile/autohint` with `X-Autohint-Applied`, and autohints variable builds whose manifest requests it; TTF/WOFF/WOFF2/variable exports report applied vs not-applied explicitly and never block on the hinter. Verified: `npm test` (82/82, `test/hinting.test.ts`), typecheck clean, live service hinted a real TTF (1,588 → 5,848 bytes; fontTools readback shows `fpgm`/`prep`/`cvt `/`gasp`, 12 glyphs, 11 cmap mappings, `/validate` ok).
+
+- Per-font `autohintTT` toggle in Font Info (default off, opt-in), round-tripped through `.glyphs` JSON/OpenStep, UFO/designspace manifests.
+- Browser TTF gains a correct `gasp` table for unhinted outlines; browser export status states plainly that bytecode hinting is applied only by the compile service.
+- Compile service: detect an optional `ttfautohint` binary (`/health` reports it), add `POST /compile/autohint`, and apply it to variable builds whose manifest requests it. When the binary is unavailable the service returns the original bytes and reports not-applied — never a silent claim.
+- **Exit gate:** toggle round-trips in tests; exported TTF lists `gasp`; with the service running, an autohint-requested export is read back by fontTools showing hinting tables (`fpgm`/`prep`/`cvt `) or an explicit not-applied status; full suite + typecheck + build pass.
+
+### Phase 12B — Multi-axis interpolation
+
+- Generalize the single-`wght` assumption: Font Info edits multiple axes, masters carry per-axis locations, interpolation evaluates at a multi-axis location, the Masters bar gains an axis picker, and the designspace bundle + compile service build a true multi-axis variable font.
+- **Exit gate:** a two-axis (weight × width) variable font whose fontTools readback shows two `fvar` axes with correct ranges; single-axis fonts behave exactly as before.
+
+### Phase 12C — Corner/brush components and Pixel tool
+
+- New component kinds (corner, cap, segment, brush) on the model with editor rendering, Palette editing, and `.glyphs`/UFO round-trip; Pixel tool paints bitmap strikes for prototyping (export scope decided in the phase plan).
+- **Exit gate:** each component kind survives a save/open round-trip and renders in editor + preview; incompatible exports label the subset honestly.
+
+### Phase 12D — COLR/CPAL color fonts
+
+- Per-glyph color layers + palette on the model, editor/preview rendering, and COLR/CPAL export through the compile service (browser writers label color as service-only).
+- **Exit gate:** exported color font read back by fontTools contains `COLR`/`CPAL` with the authored layers/palette; monochrome export unchanged.
+
+### Phase 12E — Scripts and plug-ins
+
+- Design-first phase: threat model and sandbox design (no arbitrary code execution in the Electron renderer) must be written and reviewed before any implementation. Implementation, if approved, is a separate phase.
+
+### Phase 12F — Signing and auto-update (blocked)
+
+- Requires a purchased code-signing certificate. No work until a certificate exists; unsigned-installer SmartScreen note stays in the README meanwhile.
 
 ### Scope Boundaries
 

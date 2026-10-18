@@ -250,7 +250,7 @@ export function buildUfoFiles(font: Font, masterId: string): ZipFile[] {
     name: "designspace.json",
     data: JSON.stringify({
       format: "glyphs-windows-designspace-manifest",
-      axes: font.axes, masters: font.masters, instances: font.instances,
+      axes: font.axes, masters: font.masters, instances: font.instances, autohintTT: font.autohintTT === true,
       note: "Manifest for masters/axes/instances; outlines in this UFO are the active (or instance) master, decomposed.",
     }, null, 2),
   });
@@ -275,7 +275,7 @@ export function fontToDesignspaceBundle(font: Font): Uint8Array<ArrayBuffer> {
     data: JSON.stringify({
       format: "glyphs-windows-designspace-bundle",
       familyName: font.familyName, unitsPerEm: font.unitsPerEm,
-      axes: font.axes, masters: font.masters, instances: font.instances,
+      axes: font.axes, masters: font.masters, instances: font.instances, autohintTT: font.autohintTT === true,
     }, null, 2),
   });
   return zipStore(files);
@@ -333,13 +333,15 @@ export function ufoMapToFont(map: Map<string, Uint8Array>, fileName?: string): F
   let axes: Font["axes"] = [{ tag: "wght", name: "Weight", min: 400, defaultValue: 400, max: 700 }];
   let masters: Font["masters"] = [{ id: "masterRegular", name: "Regular", weightValue: 400 }];
   let instances: Font["instances"] = [{ name: "Regular", masterId: "masterRegular", active: true }];
+  let autohintTT = false;
   const dsBytes = map.get("designspace.json");
   if (dsBytes) {
     try {
-      const ds = JSON.parse(dec.decode(dsBytes)) as { axes?: Font["axes"]; masters?: Font["masters"]; instances?: Font["instances"] };
+      const ds = JSON.parse(dec.decode(dsBytes)) as { axes?: Font["axes"]; masters?: Font["masters"]; instances?: Font["instances"]; autohintTT?: boolean };
       if (ds.axes?.length) axes = ds.axes;
       if (ds.masters?.length) masters = ds.masters;
       if (ds.instances?.length) instances = ds.instances;
+      autohintTT = ds.autohintTT === true;
     } catch { /* manifest is best-effort; outlines already imported */ }
   }
   // Imported layers live under masterRegular; remap to the first manifest master.
@@ -353,6 +355,7 @@ export function ufoMapToFont(map: Map<string, Uint8Array>, fileName?: string): F
     familyName, version: "1.000", unitsPerEm, ascender, descender, capHeight, xHeight,
     masters, instances, glyphs, kerning, kerningGroups, axes,
     featureCode: feaBytes ? dec.decode(feaBytes) : DEFAULT_FEATURE_CODE,
+    autohintTT,
     currentMasterId: masters[0].id, fileName: fileName || "Imported.ufo",
   };
 }

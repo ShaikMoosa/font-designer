@@ -84,8 +84,16 @@ export interface Font {
   kerning: Record<string, number>; kerningGroups: Record<string, number>;
   axes: FontAxis[]; featureCode: string;
   currentMasterId: string; fileName: string;
+  // Phase 12A: opt-in TrueType autohinting, applied by the compile
+  // service (browser writers emit unhinted outlines plus gasp).
+  autohintTT?: boolean;
 }
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
+
+/** True when the font requests TrueType autohinting on export. */
+export function autohintEnabled(font: Font): boolean {
+  return font.autohintTT === true;
+}
 
 export const KAPPA = 0.5522847498307936;
 

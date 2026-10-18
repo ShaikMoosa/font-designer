@@ -352,6 +352,18 @@ export function fontToTtfBytes(font: Font): Uint8Array<ArrayBuffer> {
     view.setUint32(0, 0x00030000, false);
   }
   tables.set("post", post);
+  // gasp: our glyf outlines carry no bytecode, so recommend grayscale +
+  // symmetric smoothing at every size (never gridfitting). Autohinted
+  // builds from the compile service replace this with the hinter's gasp.
+  const gasp = new Uint8Array(8);
+  {
+    const view = new DataView(gasp.buffer);
+    view.setUint16(0, 1, false); // version 1 (symmetric smoothing)
+    view.setUint16(2, 1, false); // numRanges
+    view.setUint16(4, 0xffff, false); // rangeMaxPPEM: all sizes
+    view.setUint16(6, 0x000a, false); // GASP_GRAYSCALE | GASP_SYMMETRIC_SMOOTHING
+  }
+  tables.set("gasp", gasp);
   return assembleSfnt(tables);
 }
 

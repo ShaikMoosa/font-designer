@@ -8,6 +8,7 @@ dependencies = [
   "ufo2ft>=3.0",
   "defcon>=0.10",
   "brotli>=1.1",
+  "ttfautohint-py>=0.6",
 ]
 
 [tool.uv]

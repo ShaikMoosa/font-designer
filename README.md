@@ -176,6 +176,12 @@ The codebase is TypeScript (`src/*.ts`, strict `tsc`); tests run directly on `.t
   and note live on the glyph, are edited in the Inspector, shown in the
   details pane, and round-trip through `.glyphs` (JSON and OpenStep)
   and UFO GLIF files.
+- **Phase 12A — Autohinting:** Font Info gains an Autohint
+  TrueType toggle (stored on the font, round-tripped through
+  `.glyphs` and UFO/designspace). Browser TTF now includes a
+  `gasp` table; with the compile service running, TTF/WOFF/
+  WOFF2/variable exports are autohinted by ttfautohint and the
+  status line says whether hinting was actually applied.
 - **Phase 12 slice 1 — Settings + sample strings:** A Settings
   dialog (View menu or Ctrl+,) stores the compile-service URL,
   default preview size, and guide/node defaults on the device
